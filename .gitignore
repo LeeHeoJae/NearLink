@@ -1,0 +1,30 @@
+# Gradle and Android build output
+.gradle/
+.gradle-home/
+.kotlin/
+**/build/
+local.properties
+
+# Android Studio and local editor state
+.idea/
+*.iml
+.vscode/
+
+# Signing keys, local secrets, and packaged builds
+*.jks
+*.keystore
+*.p12
+*.pfx
+.env
+.env.*
+!.env.example
+*.apk
+*.aab
+
+# Local notes, UI captures, and verification artifacts
+/local-notes/
+/ui-review/
+
+# Operating system files
+.DS_Store
+Thumbs.db

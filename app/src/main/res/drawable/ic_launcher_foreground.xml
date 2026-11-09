@@ -1,0 +1,24 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="1024"
+    android:viewportHeight="1024">
+    <!-- Keep the symbol inside the adaptive icon safe area for launcher masks. -->
+    <group android:scaleX="0.72" android:scaleY="0.72"
+        android:translateX="143.36" android:translateY="143.36">
+        <path android:fillColor="@android:color/transparent"
+            android:strokeColor="#FFFFFF" android:strokeWidth="28"
+            android:strokeLineJoin="round"
+            android:pathData="M168,322 H302 A48,48 0,0 1,350 370 V664 A48,48 0,0 1,302 712 H168 A48,48 0,0 1,120 664 V370 A48,48 0,0 1,168 322 Z M672,260 H856 A48,48 0,0 1,904 308 V664 A48,48 0,0 1,856 712 H672 A48,48 0,0 1,624 664 V308 A48,48 0,0 1,672 260 Z" />
+        <path android:fillColor="#FFFFFF"
+            android:pathData="M235,347 a8,8 0,1 0,0 16 a8,8 0,1 0,0 -16" />
+        <path android:fillColor="@android:color/transparent"
+            android:strokeColor="#FFFFFF" android:strokeWidth="10"
+            android:strokeLineCap="round"
+            android:pathData="M211,681 H259 M720,681 H808" />
+        <path android:fillColor="@android:color/transparent"
+            android:strokeColor="#FFFFFF" android:strokeWidth="16"
+            android:strokeLineCap="round"
+            android:pathData="M390,494 H418 M473,494 H501 M556,494 H584 M390,530 H418 M473,530 H501 M556,530 H584" />
+    </group>
+</vector>
