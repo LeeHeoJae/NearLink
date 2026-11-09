@@ -24,6 +24,7 @@ local.properties
 # Local notes, UI captures, and verification artifacts
 /local-notes/
 /ui-review/
+/AGENTS.md
 
 # Operating system files
 .DS_Store
