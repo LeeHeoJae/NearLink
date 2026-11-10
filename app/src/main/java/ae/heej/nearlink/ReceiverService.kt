@@ -34,6 +34,7 @@ class ReceiverService : Service() {
     private val bluetoothReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             if (intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR) == BluetoothAdapter.STATE_ON) {
+                if (android.os.SystemClock.elapsedRealtime() < recoveryPausedUntil) return
                 handler.removeCallbacks(reconnect)
                 reconnectAttempts = 0
                 if (device == null) {
@@ -55,7 +56,7 @@ class ReceiverService : Service() {
     private var discovering = false
     private var reading = false
     private var rediscoverPending = false
-    private data class Operation(val characteristic: BluetoothGattCharacteristic, val subscribe: Boolean, val handshake: Boolean = false, val stop: Boolean = false, val sessionStep: Int = 0)
+    private data class Operation(val characteristic: BluetoothGattCharacteristic, val subscribe: Boolean, val handshake: Boolean = false, val stop: Boolean = false, val sessionStep: Int = 0, val recover: Boolean = false)
     private val operations = java.util.ArrayDeque<Operation>()
     private var activeOperation: Operation? = null
     private var sessionClient: SessionHandshake.Client? = null
@@ -64,6 +65,10 @@ class ReceiverService : Service() {
     private var charging: Boolean? = null
     private var plugged: Boolean? = null
     private var stopRequested = false
+    private var recoveryRequested = false
+    private var recoveryPausedUntil = 0L
+    private var lastRecoveryAttempt = 0L
+    private val deferredRecovery = Runnable { requestProfileRecovery() }
     private val stopTimeout = Runnable { finishStop() }
     private val heartbeat = object : Runnable {
         override fun run() {
@@ -120,19 +125,9 @@ class ReceiverService : Service() {
 
     private val scanTimeout = Runnable {
         if (scanning) {
-            Log.i(TAG, "peer not advertising battery service; retry later")
+            Log.i(TAG, "peer advertisement not found; trying a direct connection")
             stopScan()
-            try {
-                val manager = getSystemService(BluetoothManager::class.java)
-                if (device != null && manager.getConnectedDevices(BluetoothProfile.GATT).contains(device)) {
-                    Log.i(TAG, "peer already has a GATT link; trying existing connection")
-                    connect()
-                } else scheduleReconnect("상대 기기의 배터리 보내기가 켜져 있는지 확인해 주세요.")
-            } catch (e: SecurityException) {
-                Log.e(TAG, "connection state permission denied", e)
-                BridgeStatus.receive(ReceiveState.ERROR, "주변 기기 권한을 허용한 뒤 다시 연결해 주세요.")
-                stopSelf()
-            }
+            connect()
         }
     }
 
@@ -177,6 +172,14 @@ class ReceiverService : Service() {
             return onStartCommand(Intent().putExtra("address", saved), flags, startId)
         }
         if (intent.action == ACTION_STOP_PEER) { requestPeerStop(); return START_NOT_STICKY }
+        if (intent.action == ACTION_RECOVERY_PAUSE) {
+            if (device == null) BridgeSession.savedPeer(this)?.let {
+                onStartCommand(Intent().putExtra("address", it), flags, startId)
+            }
+            handler.postDelayed({ pauseForRecovery() }, 1_500)
+            return START_STICKY
+        }
+        if (android.os.SystemClock.elapsedRealtime() < recoveryPausedUntil) return START_STICKY
         handler.removeCallbacks(heartbeat)
         handler.postDelayed(heartbeat, 30_000)
         val peer = intent.getStringExtra("peer")
@@ -240,7 +243,7 @@ class ReceiverService : Service() {
 
     private fun scanForPeer() {
         val peer = device ?: return
-        if (stopping || scanning) return
+        if (stopping || scanning || android.os.SystemClock.elapsedRealtime() < recoveryPausedUntil) return
         try {
             val adapter = getSystemService(BluetoothManager::class.java).adapter
             val activeScanner = if (adapter != null && adapter.isEnabled) adapter.bluetoothLeScanner else null
@@ -253,7 +256,8 @@ class ReceiverService : Service() {
                 return
             }
             val filter = ScanFilter.Builder().setDeviceAddress(peer.address).setServiceUuid(ParcelUuid(BAS)).build()
-            val settings = ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_POWER).build()
+            val mode = if (reconnectAttempts < 2) ScanSettings.SCAN_MODE_LOW_LATENCY else ScanSettings.SCAN_MODE_LOW_POWER
+            val settings = ScanSettings.Builder().setScanMode(mode).build()
             scanning = true
             activeScanner.startScan(listOf(filter), settings, scanCallback)
             BridgeStatus.receive(ReceiveState.SEARCHING)
@@ -309,6 +313,8 @@ class ReceiverService : Service() {
 
     private fun scheduleReconnect(detail: String? = null, waitingForBluetooth: Boolean = false) {
         if (stopping) return
+        recoveryRequested = false
+        handler.removeCallbacks(deferredRecovery)
         BridgeStatus.receive(if (waitingForBluetooth) ReceiveState.WAITING_FOR_BLUETOOTH else ReceiveState.RETRYING, detail)
         handler.removeCallbacks(reconnect)
         resetOperations()
@@ -323,10 +329,36 @@ class ReceiverService : Service() {
         handler.postDelayed(reconnect, delay)
     }
 
+    private fun pauseForRecovery() {
+        if (stopping || stopRequested || device == null) return
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (now < recoveryPausedUntil) return
+        lastRecoveryAttempt = now
+        recoveryRequested = false
+        handler.removeCallbacks(deferredRecovery)
+        recoveryPausedUntil = now + 15_000
+        handler.removeCallbacks(reconnect)
+        handler.removeCallbacks(heartbeat)
+        stopScan()
+        resetOperations()
+        val old = gatt
+        gatt = null
+        discovering = false
+        reading = false
+        rediscoverPending = false
+        try { old?.disconnect(); old?.close() }
+        catch (e: SecurityException) { Log.e(TAG, "recovery disconnect denied", e) }
+        BridgeStatus.receive(ReceiveState.RETRYING, "배터리 연결을 새로 확인하고 있어요.")
+        Log.i(TAG, "pausing connection to refresh system battery profile")
+        handler.postDelayed(reconnect, 15_000)
+        handler.postDelayed(heartbeat, 45_000)
+    }
+
     private val callback = object : BluetoothGattCallback() {
         override fun onServiceChanged(gatt: BluetoothGatt) {
             handler.post {
                 if (stopping || gatt !== this@ReceiverService.gatt) return@post
+                if (streamReady) recoveryRequested = true
                 streamReady = false
                 sessionClient = null
                 BridgeStatus.receive(ReceiveState.READING)
@@ -368,6 +400,14 @@ class ReceiverService : Service() {
                 if (stopping || gatt !== this@ReceiverService.gatt) return@post
                 val operation = activeOperation ?: return@post
                 if (!operation.handshake || operation.characteristic !== characteristic) return@post
+                if (operation.recover) {
+                    if (status == BluetoothGatt.GATT_SUCCESS) pauseForRecovery()
+                    else {
+                        Log.i(TAG, "peer does not support battery profile recovery: $status")
+                        finishOperation(gatt)
+                    }
+                    return@post
+                }
                 if (operation.stop) {
                     if (status != BluetoothGatt.GATT_SUCCESS) Log.w(TAG, "Stop request rejected: $status")
                     finishStop()
@@ -468,6 +508,25 @@ class ReceiverService : Service() {
         handler.removeCallbacks(operationTimeout)
         BridgeStatus.receive(ReceiveState.CONNECTED)
         Log.i(TAG, "stream ready sessionVerified=${sessionClient != null}")
+        requestProfileRecovery()
+    }
+
+    private fun requestProfileRecovery() {
+        if (!recoveryRequested || stopping || stopRequested || !streamReady || sessionClient == null) return
+        val active = gatt ?: return
+        val characteristic = active.getService(BAS)?.getCharacteristic(BatteryService.HANDSHAKE) ?: return
+        val now = android.os.SystemClock.elapsedRealtime()
+        // Allow the other device's acceptance window to expire before retrying.
+        val delay = RecoveryTiming.outgoingDelay(now, lastRecoveryAttempt)
+        if (delay > 0 || activeOperation != null || operations.isNotEmpty() || discovering) {
+            handler.removeCallbacks(deferredRecovery)
+            handler.postDelayed(deferredRecovery, if (delay > 0) delay else 1_000)
+            return
+        }
+        recoveryRequested = false
+        lastRecoveryAttempt = now
+        operations.add(Operation(characteristic, false, handshake = true, recover = true))
+        runNextOperation(active)
     }
 
     @Suppress("DEPRECATION")
@@ -491,7 +550,7 @@ class ReceiverService : Service() {
                 val payload = when (operation.sessionStep) {
                     1 -> sessionClient?.hello()
                     3 -> sessionClient?.acknowledgement()
-                    else -> byteArrayOf(if (operation.stop) 2 else 1)
+                    else -> byteArrayOf(if (operation.stop) 2 else if (operation.recover) 3 else 1)
                 } ?: run { scheduleReconnect("연결 세션을 확인할 수 없어 다시 연결합니다."); return }
                 if (Build.VERSION.SDK_INT >= 33) active.writeCharacteristic(operation.characteristic, payload, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT) == BluetoothStatusCodes.SUCCESS
                 else {
@@ -514,6 +573,7 @@ class ReceiverService : Service() {
             }
             if (!accepted) {
                 if (operation.stop) finishStop()
+                else if (operation.recover) finishOperation(active)
                 else if (operation.handshake && sessionClient == null) finishOperation(active)
                 else scheduleReconnect("배터리 정보 요청에 실패해 다시 연결합니다.")
             }
@@ -597,6 +657,7 @@ class ReceiverService : Service() {
 
     companion object {
         const val ACTION_STOP_PEER = "ae.heej.nearlink.STOP_PEER"
+        const val ACTION_RECOVERY_PAUSE = "ae.heej.nearlink.RECOVERY_PAUSE"
         private const val TAG = "BatteryBleReceiver"
         private val BAS = UUID.fromString("0000180f-0000-1000-8000-00805f9b34fb")
         private val STATUS = UUID.fromString("00002bed-0000-1000-8000-00805f9b34fb")
