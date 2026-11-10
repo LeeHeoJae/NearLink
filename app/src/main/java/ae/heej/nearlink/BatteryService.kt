@@ -67,6 +67,7 @@ class BatteryService : Service() {
     @Volatile private var battery = 0
     @Volatile private var generation = 0
     private var waitingForBluetooth = false
+    private var lastPeerRecovery = 0L
     private var readyUntil = 0L
     // Separate from BLE callbacks: restarting Bluetooth must not cancel the safety deadline.
     private val leaseHandler = Handler(Looper.getMainLooper())
@@ -342,6 +343,20 @@ class BatteryService : Service() {
                             Log.e(TAG, "Could not start reciprocal connection", e)
                             server?.sendResponse(device, requestId, BluetoothGatt.GATT_FAILURE, 0, null)
                         }
+                    } else if (command == BridgeControl.Command.RECOVER) {
+                        val now = android.os.SystemClock.elapsedRealtime()
+                        val allowed = RecoveryTiming.canAccept(now, lastPeerRecovery)
+                        val started = if (allowed) try {
+                            startForegroundService(Intent(this@BatteryService, ReceiverService::class.java)
+                                .setAction(ReceiverService.ACTION_RECOVERY_PAUSE))
+                            lastPeerRecovery = now
+                            true
+                        } catch (e: RuntimeException) {
+                            Log.w(TAG, "could not start battery profile recovery", e)
+                            false
+                        } else false
+                        server?.sendResponse(device, requestId,
+                            if (started) BluetoothGatt.GATT_SUCCESS else BluetoothGatt.GATT_FAILURE, 0, null)
                     } else if (command == BridgeControl.Command.STOP) {
                         BridgeSession.disable(this@BatteryService)
                         server?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, 0, null)
