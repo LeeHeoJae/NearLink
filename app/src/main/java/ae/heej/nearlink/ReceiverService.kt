@@ -373,6 +373,7 @@ class ReceiverService : Service() {
                 if (stopping || gatt !== this@ReceiverService.gatt) return@post
                 val operation = activeOperation ?: return@post
                 if (!operation.subscribe || operation.characteristic !== descriptor.characteristic) return@post
+                Log.i(TAG, "subscription callback characteristic=${descriptor.characteristic.uuid} descriptor=${descriptor.uuid} status=$status")
                 if (status != BluetoothGatt.GATT_SUCCESS) { scheduleReconnect("변경 알림을 설정하지 못해 다시 연결합니다."); return@post }
                 finishOperation(gatt)
             }
@@ -380,13 +381,13 @@ class ReceiverService : Service() {
 
         override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, value: ByteArray) {
             val snapshot = value.copyOf()
-            handler.post { if (!stopping && gatt === this@ReceiverService.gatt) acceptValue(characteristic.uuid, snapshot) }
+            handler.post { if (!stopping && gatt === this@ReceiverService.gatt) acceptLoggedValue("notification", characteristic.uuid, snapshot) }
         }
 
         @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
         override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
             val snapshot = characteristic.value?.copyOf() ?: return
-            handler.post { if (!stopping && gatt === this@ReceiverService.gatt) acceptValue(characteristic.uuid, snapshot) }
+            handler.post { if (!stopping && gatt === this@ReceiverService.gatt) acceptLoggedValue("notification", characteristic.uuid, snapshot) }
         }
     }
 
@@ -467,6 +468,9 @@ class ReceiverService : Service() {
                     else { descriptor.value = value; active.writeDescriptor(descriptor) }
                 }
             }
+            if (!operation.handshake) {
+                Log.i(TAG, "${if (operation.subscribe) "subscription" else "read"} request characteristic=${operation.characteristic.uuid} accepted=$accepted")
+            }
             if (!accepted) {
                 if (operation.stop) finishStop() else if (operation.handshake) finishOperation(active) else scheduleReconnect("배터리 정보 요청에 실패해 다시 연결합니다.")
             }
@@ -485,11 +489,20 @@ class ReceiverService : Service() {
         if (stopping || active !== gatt) return
         val operation = activeOperation ?: return
         if (operation.subscribe || operation.characteristic !== characteristic) return
-        if (status != BluetoothGatt.GATT_SUCCESS || value == null || !acceptValue(characteristic.uuid, value)) {
+        Log.i(TAG, "read callback characteristic=${characteristic.uuid} status=$status value=${value.diagnosticValue()}")
+        if (status != BluetoothGatt.GATT_SUCCESS || value == null || !acceptLoggedValue("read", characteristic.uuid, value)) {
             scheduleReconnect("배터리를 읽지 못해 다시 연결합니다.")
             return
         }
         finishOperation(active)
+    }
+
+    private fun ByteArray?.diagnosticValue(): String = this?.joinToString(":") { "%02x".format(it.toInt() and 0xff) } ?: "null"
+
+    private fun acceptLoggedValue(source: String, uuid: UUID, value: ByteArray): Boolean {
+        val accepted = acceptValue(uuid, value)
+        Log.i(TAG, "value source=$source characteristic=$uuid value=${value.diagnosticValue()} accepted=$accepted level=$lastLevel charging=$charging plugged=$plugged")
+        return accepted
     }
 
     private fun acceptValue(uuid: UUID, value: ByteArray): Boolean {

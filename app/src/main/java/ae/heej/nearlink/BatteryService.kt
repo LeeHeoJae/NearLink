@@ -41,9 +41,17 @@ class BatteryService : Service() {
     private val handler = Handler(Looper.getMainLooper())
     private val notifications = linkedMapOf<Pair<BluetoothDevice, UUID>, ByteArray>()
     private var notifying: BluetoothDevice? = null
+    private var notificationDetails: String? = null
+    // Session-local identifiers allow correlation without logging Bluetooth addresses.
+    private val diagnosticPeers = mutableMapOf<BluetoothDevice, Int>()
+    private fun diagnosticPeer(device: BluetoothDevice): Int = synchronized(diagnosticPeers) {
+        diagnosticPeers.getOrPut(device) { diagnosticPeers.size + 1 }
+    }
+    private fun ByteArray?.diagnosticValue(): String = this?.joinToString(":") { "%02x".format(it.toInt() and 0xff) } ?: "null"
     @Volatile private var statusValue = BatteryStatusCodec.encode(0, 0, false, false)
     private val notificationTimeout = Runnable {
         // A stalled stack must not leave the queue blocked forever.
+        Log.w(TAG, "notification timeout generation=$generation $notificationDetails; restarting GATT server")
         closeBle()
         startBle()
     }
@@ -112,6 +120,7 @@ class BatteryService : Service() {
             val value = intent.getIntExtra("level", -1)
             val scale = intent.getIntExtra("scale", 100)
             if (value >= 0 && scale > 0) {
+                val previous = battery
                 battery = (value * 100 / scale).coerceIn(0, 100)
                 val chargeState = when (intent.getIntExtra(BatteryManager.EXTRA_STATUS, BatteryManager.BATTERY_STATUS_UNKNOWN)) {
                     BatteryManager.BATTERY_STATUS_CHARGING -> 1
@@ -123,6 +132,7 @@ class BatteryService : Service() {
                 statusValue = BatteryStatusCodec.encode(battery, chargeState,
                     plugged and (BatteryManager.BATTERY_PLUGGED_AC or BatteryManager.BATTERY_PLUGGED_USB or 8) != 0,
                     plugged and BatteryManager.BATTERY_PLUGGED_WIRELESS != 0)
+                Log.i(TAG, "battery changed previous=$previous level=$battery raw=$value scale=$scale chargeState=$chargeState plugged=$plugged status=${statusValue.diagnosticValue()}")
                 notifySubscribers()
             }
         }
@@ -154,6 +164,7 @@ class BatteryService : Service() {
 
     private fun startBle() {
         val currentGeneration = ++generation
+        Log.i(TAG, "GATT server starting generation=$currentGeneration")
         BridgeStatus.send(SendState.STARTING)
         try {
             val manager = getSystemService(BluetoothManager::class.java)
@@ -240,7 +251,7 @@ class BatteryService : Service() {
 
         override fun onConnectionStateChange(device: BluetoothDevice, status: Int, newState: Int) {
             if (callbackGeneration != generation) return
-            Log.i(TAG, "connection state=$newState status=$status")
+            Log.i(TAG, "connection generation=$callbackGeneration peer=${diagnosticPeer(device)} state=$newState status=$status")
             if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                 synchronized(subscribed) { subscribed.removeAll { it.first == device } }
                 handler.post {
@@ -248,6 +259,7 @@ class BatteryService : Service() {
                     notifications.keys.removeAll { it.first == device }
                     if (notifying == device) {
                         notifying = null
+                        notificationDetails = null
                         handler.removeCallbacks(notificationTimeout)
                         drainNotifications()
                     }
@@ -257,9 +269,14 @@ class BatteryService : Service() {
 
         override fun onNotificationSent(device: BluetoothDevice, status: Int) {
             handler.post {
-                if (callbackGeneration != generation || notifying != device) return@post
+                if (callbackGeneration != generation || notifying != device) {
+                    Log.w(TAG, "notification callback ignored generation=$callbackGeneration peer=${diagnosticPeer(device)} status=$status currentGeneration=$generation")
+                    return@post
+                }
+                Log.i(TAG, "notification callback generation=$callbackGeneration $notificationDetails status=$status")
                 handler.removeCallbacks(notificationTimeout)
                 notifying = null
+                notificationDetails = null
                 if (status != BluetoothGatt.GATT_SUCCESS) handler.postDelayed({ notifySubscribers() }, 1_000)
                 drainNotifications()
             }
@@ -315,9 +332,9 @@ class BatteryService : Service() {
                 else -> BluetoothGatt.GATT_SUCCESS
             }
             try {
-                server?.sendResponse(device, requestId, result, offset,
-                    if (result == BluetoothGatt.GATT_SUCCESS) value?.copyOfRange(offset, value.size) else null)
-                if (result == BluetoothGatt.GATT_SUCCESS) Log.i(TAG, "battery read=$battery")
+                val response = if (result == BluetoothGatt.GATT_SUCCESS) value?.copyOfRange(offset, value.size) else null
+                val sent = server?.sendResponse(device, requestId, result, offset, response)
+                Log.i(TAG, "read generation=$callbackGeneration peer=${diagnosticPeer(device)} request=$requestId characteristic=${characteristic.uuid} offset=$offset result=$result value=${response.diagnosticValue()} responseSent=$sent")
             } catch (e: SecurityException) { Log.e(TAG, "read response failed", e) }
         }
 
@@ -333,7 +350,8 @@ class BatteryService : Service() {
                     offset != 0 -> BluetoothGatt.GATT_INVALID_OFFSET
                     else -> BluetoothGatt.GATT_SUCCESS
                 }
-                server?.sendResponse(device, requestId, result, offset, if (result == BluetoothGatt.GATT_SUCCESS) value else null)
+                val sent = server?.sendResponse(device, requestId, result, offset, if (result == BluetoothGatt.GATT_SUCCESS) value else null)
+                Log.i(TAG, "descriptor read generation=$callbackGeneration peer=${diagnosticPeer(device)} request=$requestId characteristic=${descriptor.characteristic.uuid} descriptor=${descriptor.uuid} offset=$offset result=$result value=${if (result == BluetoothGatt.GATT_SUCCESS) value.diagnosticValue() else "null"} responseSent=$sent")
             } catch (e: SecurityException) { Log.e(TAG, "descriptor read failed", e) }
         }
 
@@ -347,8 +365,10 @@ class BatteryService : Service() {
                 val key = device to descriptor.characteristic.uuid
                 if (enabled) subscribed.add(key) else subscribed.remove(key)
             }
+            val subscriptionCount = synchronized(subscribed) { subscribed.size }
             try {
-                if (responseNeeded) server?.sendResponse(device, requestId, if (valid) BluetoothGatt.GATT_SUCCESS else BluetoothGatt.GATT_FAILURE, offset, null)
+                val sent = if (responseNeeded) server?.sendResponse(device, requestId, if (valid) BluetoothGatt.GATT_SUCCESS else BluetoothGatt.GATT_FAILURE, offset, null) else null
+                Log.i(TAG, "descriptor write generation=$callbackGeneration peer=${diagnosticPeer(device)} request=$requestId characteristic=${descriptor.characteristic.uuid} descriptor=${descriptor.uuid} value=${value.diagnosticValue()} prepared=$preparedWrite offset=$offset authorized=${isAuthorizedPeer(device)} valid=$valid responseNeeded=$responseNeeded responseSent=$sent subscriptions=$subscriptionCount")
             } catch (e: SecurityException) { Log.e(TAG, "descriptor write failed", e) }
             if (valid && enabled) notifySubscribers()
         }
@@ -361,6 +381,7 @@ class BatteryService : Service() {
                 subscribed.forEach { key ->
                     notifications[key] = if (key.second == LEVEL) byteArrayOf(battery.toByte()) else statusValue.copyOf()
                 }
+                Log.i(TAG, "notification enqueue generation=$generation subscriptions=${subscribed.size} queued=${notifications.size}")
             }
             drainNotifications()
         }
@@ -379,21 +400,27 @@ class BatteryService : Service() {
             val characteristic = (if (key.second == LEVEL) level else statusCharacteristic) ?: continue
             try {
                 notifying = key.first
-                val accepted = if (Build.VERSION.SDK_INT >= 33) {
-                    activeServer.notifyCharacteristicChanged(key.first, characteristic, false, value) == BluetoothStatusCodes.SUCCESS
+                notificationDetails = "peer=${diagnosticPeer(key.first)} characteristic=${key.second} value=${value.diagnosticValue()}"
+                val (accepted, requestResult) = if (Build.VERSION.SDK_INT >= 33) {
+                    val result = activeServer.notifyCharacteristicChanged(key.first, characteristic, false, value)
+                    (result == BluetoothStatusCodes.SUCCESS) to result.toString()
                 } else {
                     characteristic.value = value
-                    activeServer.notifyCharacteristicChanged(key.first, characteristic, false)
+                    val result = activeServer.notifyCharacteristicChanged(key.first, characteristic, false)
+                    result to result.toString()
                 }
+                Log.i(TAG, "notification request generation=$generation $notificationDetails accepted=$accepted result=$requestResult queued=${notifications.size}")
                 if (accepted) {
                     handler.postDelayed(notificationTimeout, 15_000)
                     return
                 }
                 notifying = null
+                notificationDetails = null
                 // Re-enqueue latest values after a busy/error response, rather than losing a change.
                 handler.postDelayed({ notifySubscribers() }, 1_000)
             } catch (e: SecurityException) {
                 notifying = null
+                notificationDetails = null
                 Log.e(TAG, "notify denied", e)
             }
         }
@@ -407,10 +434,12 @@ class BatteryService : Service() {
     }
 
     private fun closeBle() {
+        Log.i(TAG, "GATT server closing generation=$generation")
         generation++
         handler.removeCallbacksAndMessages(null)
         notifications.clear()
         notifying = null
+        notificationDetails = null
         try {
             advertiseCallback?.let { advertiser?.stopAdvertising(it) }
         } catch (e: SecurityException) { Log.e(TAG, "cleanup failed", e) }
