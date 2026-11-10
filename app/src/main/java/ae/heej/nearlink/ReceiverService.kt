@@ -55,9 +55,11 @@ class ReceiverService : Service() {
     private var discovering = false
     private var reading = false
     private var rediscoverPending = false
-    private data class Operation(val characteristic: BluetoothGattCharacteristic, val subscribe: Boolean, val handshake: Boolean = false, val stop: Boolean = false)
+    private data class Operation(val characteristic: BluetoothGattCharacteristic, val subscribe: Boolean, val handshake: Boolean = false, val stop: Boolean = false, val sessionStep: Int = 0)
     private val operations = java.util.ArrayDeque<Operation>()
     private var activeOperation: Operation? = null
+    private var sessionClient: SessionHandshake.Client? = null
+    private var streamReady = false
     private var lastLevel: Int? = null
     private var charging: Boolean? = null
     private var plugged: Boolean? = null
@@ -70,6 +72,9 @@ class ReceiverService : Service() {
             val characteristic = active?.getService(BAS)?.getCharacteristic(BatteryService.HANDSHAKE)
             if (active != null && characteristic != null && activeOperation?.handshake != true && operations.none { it.handshake }) {
                 operations.add(Operation(characteristic, false, handshake = true))
+                if (streamReady && sessionClient != null) active.getService(BAS)?.getCharacteristic(BatteryService.SESSION)?.let {
+                    operations.add(Operation(it, false))
+                }
                 if (activeOperation == null && !discovering) runNextOperation(active)
             }
             handler.postDelayed(this, 30_000)
@@ -106,6 +111,8 @@ class ReceiverService : Service() {
         handler.removeCallbacks(operationTimeout)
         operations.clear()
         activeOperation = null
+        sessionClient = null
+        streamReady = false
         lastLevel = null
         charging = null
         plugged = null
@@ -320,6 +327,9 @@ class ReceiverService : Service() {
         override fun onServiceChanged(gatt: BluetoothGatt) {
             handler.post {
                 if (stopping || gatt !== this@ReceiverService.gatt) return@post
+                streamReady = false
+                sessionClient = null
+                BridgeStatus.receive(ReceiveState.READING)
                 Log.i(TAG, "peer services changed; rediscovery requested")
                 if (discovering || reading) rediscoverPending = true else startDiscovery(gatt)
             }
@@ -363,7 +373,11 @@ class ReceiverService : Service() {
                     finishStop()
                     return@post
                 }
-                if (status != BluetoothGatt.GATT_SUCCESS) Log.w(TAG, "Reciprocal setup was not accepted: $status")
+                if (status != BluetoothGatt.GATT_SUCCESS) {
+                    if (sessionClient != null) { scheduleReconnect("연결 확인에 실패해 다시 연결합니다."); return@post }
+                    Log.w(TAG, "Reciprocal setup was not accepted: $status")
+                }
+                if (operation.sessionStep == 3) sessionClient?.written()
                 finishOperation(gatt)
             }
         }
@@ -424,7 +438,16 @@ class ReceiverService : Service() {
         charging = null
         plugged = null
         operations.clear()
+        streamReady = false
+        val session = service.getCharacteristic(BatteryService.SESSION)
+        sessionClient = session?.let {
+            SessionHandshake.Client(UUID.randomUUID().mostSignificantBits.let { id -> if (id == 0L) 1L else id })
+        }
         service.getCharacteristic(BatteryService.HANDSHAKE)?.let { operations.add(Operation(it, false, true)) }
+        if (session != null) {
+            operations.add(Operation(session, false, handshake = true, sessionStep = 1))
+            operations.add(Operation(session, false))
+        }
         operations.add(Operation(level, false))
         service.getCharacteristic(STATUS)?.let { operations.add(Operation(it, false)) }
         for (uuid in listOf(LEVEL, STATUS)) {
@@ -434,7 +457,17 @@ class ReceiverService : Service() {
                 }
             }
         }
+        if (session != null) operations.add(Operation(session, false, handshake = true, sessionStep = 3))
         runNextOperation(active)
+    }
+
+    private fun finishSetup() {
+        if (lastLevel == null || activeOperation != null || operations.isNotEmpty() || discovering || rediscoverPending) return
+        if (sessionClient?.ready == false) return
+        streamReady = true
+        handler.removeCallbacks(operationTimeout)
+        BridgeStatus.receive(ReceiveState.CONNECTED)
+        Log.i(TAG, "stream ready sessionVerified=${sessionClient != null}")
     }
 
     @Suppress("DEPRECATION")
@@ -444,14 +477,22 @@ class ReceiverService : Service() {
         activeOperation = operation
         reading = operation != null
         if (operation == null) {
-            handler.removeCallbacks(operationTimeout)
             if (rediscoverPending) { rediscoverPending = false; startDiscovery(active) }
+            else if (streamReady) handler.removeCallbacks(operationTimeout)
+            else {
+                armTimeout()
+                finishSetup()
+            }
             return
         }
         try {
             armTimeout()
             val accepted = if (operation.handshake) {
-                val payload = byteArrayOf(if (operation.stop) 2 else 1)
+                val payload = when (operation.sessionStep) {
+                    1 -> sessionClient?.hello()
+                    3 -> sessionClient?.acknowledgement()
+                    else -> byteArrayOf(if (operation.stop) 2 else 1)
+                } ?: run { scheduleReconnect("연결 세션을 확인할 수 없어 다시 연결합니다."); return }
                 if (Build.VERSION.SDK_INT >= 33) active.writeCharacteristic(operation.characteristic, payload, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT) == BluetoothStatusCodes.SUCCESS
                 else {
                     operation.characteristic.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
@@ -472,7 +513,9 @@ class ReceiverService : Service() {
                 Log.i(TAG, "${if (operation.subscribe) "subscription" else "read"} request characteristic=${operation.characteristic.uuid} accepted=$accepted")
             }
             if (!accepted) {
-                if (operation.stop) finishStop() else if (operation.handshake) finishOperation(active) else scheduleReconnect("배터리 정보 요청에 실패해 다시 연결합니다.")
+                if (operation.stop) finishStop()
+                else if (operation.handshake && sessionClient == null) finishOperation(active)
+                else scheduleReconnect("배터리 정보 요청에 실패해 다시 연결합니다.")
             }
         } catch (e: SecurityException) {
             BridgeStatus.receive(ReceiveState.ERROR, "주변 기기 권한을 허용한 뒤 다시 연결해 주세요.")
@@ -490,7 +533,9 @@ class ReceiverService : Service() {
         val operation = activeOperation ?: return
         if (operation.subscribe || operation.characteristic !== characteristic) return
         Log.i(TAG, "read callback characteristic=${characteristic.uuid} status=$status value=${value.diagnosticValue()}")
-        if (status != BluetoothGatt.GATT_SUCCESS || value == null || !acceptLoggedValue("read", characteristic.uuid, value)) {
+        val valid = if (characteristic.uuid == BatteryService.SESSION) value != null && sessionClient?.acceptReady(value) == true
+            else value != null && acceptLoggedValue("read", characteristic.uuid, value)
+        if (status != BluetoothGatt.GATT_SUCCESS || !valid) {
             scheduleReconnect("배터리를 읽지 못해 다시 연결합니다.")
             return
         }
@@ -501,6 +546,10 @@ class ReceiverService : Service() {
 
     private fun acceptLoggedValue(source: String, uuid: UUID, value: ByteArray): Boolean {
         val accepted = acceptValue(uuid, value)
+        if (accepted && source == "notification" && uuid == LEVEL) {
+            sessionClient?.notified()
+            if (!streamReady) finishSetup()
+        }
         Log.i(TAG, "value source=$source characteristic=$uuid value=${value.diagnosticValue()} accepted=$accepted level=$lastLevel charging=$charging plugged=$plugged")
         return accepted
     }
@@ -523,7 +572,7 @@ class ReceiverService : Service() {
         val level = lastLevel ?: return true
         val peer = device ?: return false
         try {
-            BridgeStatus.recordReading(this, peer.address, peerName, level, charging, plugged)
+            BridgeStatus.recordReading(this, peer.address, peerName, level, charging, plugged, connected = streamReady)
             reconnectAttempts = 0
         } catch (e: SecurityException) {
             BridgeStatus.receive(ReceiveState.ERROR, "주변 기기 권한을 허용한 뒤 다시 연결해 주세요.")

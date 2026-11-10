@@ -48,12 +48,21 @@ class BatteryService : Service() {
         diagnosticPeers.getOrPut(device) { diagnosticPeers.size + 1 }
     }
     private fun ByteArray?.diagnosticValue(): String = this?.joinToString(":") { "%02x".format(it.toInt() and 0xff) } ?: "null"
+    private val notificationRecovery = NotificationRecovery()
+    private var notificationRetryPending = false
+    private val retryNotifications = Runnable { notificationRetryPending = false; notifySubscribers() }
+    @Volatile private var sessionProtocol = SessionHandshake.Server(newSessionId(), android.os.SystemClock::elapsedRealtime)
     @Volatile private var statusValue = BatteryStatusCodec.encode(0, 0, false, false)
-    private val notificationTimeout = Runnable {
+    private val notificationTimeout: Runnable = Runnable {
         // A stalled stack must not leave the queue blocked forever.
-        Log.w(TAG, "notification timeout generation=$generation $notificationDetails; restarting GATT server")
-        closeBle()
-        startBle()
+        val grace = notificationRecovery.timeoutDelay()
+        Log.w(TAG, "notification timeout generation=$generation $notificationDetails grace=$grace")
+        if (grace != null) handler.postDelayed(notificationTimeout, grace)
+        else {
+            Log.w(TAG, "repeated notification timeouts; restarting GATT server")
+            closeBle()
+            startBle()
+        }
     }
     @Volatile private var battery = 0
     @Volatile private var generation = 0
@@ -163,6 +172,8 @@ class BatteryService : Service() {
     }
 
     private fun startBle() {
+        if (server != null) return
+        sessionProtocol = SessionHandshake.Server(newSessionId(), android.os.SystemClock::elapsedRealtime)
         val currentGeneration = ++generation
         Log.i(TAG, "GATT server starting generation=$currentGeneration")
         BridgeStatus.send(SendState.STARTING)
@@ -211,6 +222,9 @@ class BatteryService : Service() {
             service.addCharacteristic(BluetoothGattCharacteristic(
                 HANDSHAKE, BluetoothGattCharacteristic.PROPERTY_WRITE,
                 BluetoothGattCharacteristic.PERMISSION_WRITE_ENCRYPTED))
+            service.addCharacteristic(BluetoothGattCharacteristic(SESSION,
+                BluetoothGattCharacteristic.PROPERTY_READ or BluetoothGattCharacteristic.PROPERTY_WRITE,
+                BluetoothGattCharacteristic.PERMISSION_READ_ENCRYPTED or BluetoothGattCharacteristic.PERMISSION_WRITE_ENCRYPTED))
             if (!openedServer.addService(service)) {
                 Log.e(TAG, "failed to register BAS")
                 BridgeStatus.send(SendState.ERROR, "배터리 서비스를 등록하지 못했습니다. 다시 시도해 주세요.")
@@ -253,6 +267,7 @@ class BatteryService : Service() {
             if (callbackGeneration != generation) return
             Log.i(TAG, "connection generation=$callbackGeneration peer=${diagnosticPeer(device)} state=$newState status=$status")
             if (newState == BluetoothProfile.STATE_DISCONNECTED) {
+                sessionProtocol.forget(device.address)
                 synchronized(subscribed) { subscribed.removeAll { it.first == device } }
                 handler.post {
                     if (callbackGeneration != generation) return@post
@@ -277,8 +292,13 @@ class BatteryService : Service() {
                 handler.removeCallbacks(notificationTimeout)
                 notifying = null
                 notificationDetails = null
-                if (status != BluetoothGatt.GATT_SUCCESS) handler.postDelayed({ notifySubscribers() }, 1_000)
-                drainNotifications()
+                if (status != BluetoothGatt.GATT_SUCCESS) scheduleNotificationRetry()
+                else {
+                    notificationRecovery.success()
+                    handler.removeCallbacks(retryNotifications)
+                    notificationRetryPending = false
+                    drainNotifications()
+                }
             }
         }
 
@@ -289,6 +309,23 @@ class BatteryService : Service() {
             handler.post {
                 if (callbackGeneration != generation) return@post
                 try {
+                    if (characteristic.uuid == SESSION) {
+                        val packet = SessionHandshake.decode(value)
+                        val authenticated = isAuthorizedPeer(device) && !preparedWrite && responseNeeded && offset == 0
+                        val subscribedToBattery = synchronized(subscribed) {
+                            (device to LEVEL) in subscribed && (device to STATUS) in subscribed
+                        }
+                        val accepted = if (!authenticated || packet == null) false else when (packet.kind) {
+                            SessionHandshake.HELLO -> sessionProtocol.hello(device.address, packet)
+                            SessionHandshake.ACK -> sessionProtocol.acknowledge(device.address, packet, subscribedToBattery)
+                            else -> false
+                        }
+                        if (responseNeeded) server?.sendResponse(device, requestId,
+                            if (accepted) BluetoothGatt.GATT_SUCCESS else BluetoothGatt.GATT_FAILURE, 0, null)
+                        Log.i(TAG, "session write kind=${packet?.kind} accepted=$accepted generation=$generation")
+                        if (accepted && packet?.kind == SessionHandshake.ACK) notifySubscribers()
+                        return@post
+                    }
                     val valid = characteristic.uuid == HANDSHAKE && !preparedWrite && responseNeeded &&
                         offset == 0 && device.bondState == BluetoothDevice.BOND_BONDED &&
                         BridgeSession.hasPermissions(this@BatteryService)
@@ -323,6 +360,7 @@ class BatteryService : Service() {
             val value = when (characteristic.uuid) {
                 LEVEL -> byteArrayOf(battery.toByte())
                 STATUS -> statusValue.copyOf()
+                SESSION -> sessionProtocol.response(device.address)
                 else -> null
             }
             val result = when {
@@ -387,9 +425,15 @@ class BatteryService : Service() {
         }
     }
 
+    private fun scheduleNotificationRetry() {
+        notificationRetryPending = true
+        handler.removeCallbacks(retryNotifications)
+        handler.postDelayed(retryNotifications, notificationRecovery.failureDelay())
+    }
+
     @Suppress("DEPRECATION")
     private fun drainNotifications() {
-        if (notifying != null) return
+        if (notifying != null || notificationRetryPending) return
         val activeServer = server ?: return
         while (notifications.isNotEmpty()) {
             val entry = notifications.entries.first()
@@ -417,7 +461,8 @@ class BatteryService : Service() {
                 notifying = null
                 notificationDetails = null
                 // Re-enqueue latest values after a busy/error response, rather than losing a change.
-                handler.postDelayed({ notifySubscribers() }, 1_000)
+                scheduleNotificationRetry()
+                return
             } catch (e: SecurityException) {
                 notifying = null
                 notificationDetails = null
@@ -438,6 +483,8 @@ class BatteryService : Service() {
         generation++
         handler.removeCallbacksAndMessages(null)
         notifications.clear()
+        notificationRecovery.clear()
+        notificationRetryPending = false
         notifying = null
         notificationDetails = null
         try {
@@ -466,6 +513,8 @@ class BatteryService : Service() {
 
     companion object {
         const val ACTION_PREPARE = "ae.heej.nearlink.PREPARE"
+        private fun newSessionId(): Long = UUID.randomUUID().mostSignificantBits.let { if (it == 0L) 1L else it }
+        val SESSION: UUID = UUID.fromString("734b7302-53b1-4cf0-8d2e-d4b5c742b65b")
         val HANDSHAKE: UUID = UUID.fromString("734b7301-53b1-4cf0-8d2e-d4b5c742b65b")
         private const val TAG = "BatteryBleProbe"
         private val BAS = UUID.fromString("0000180f-0000-1000-8000-00805f9b34fb")

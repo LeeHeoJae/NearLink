@@ -28,6 +28,13 @@ class BridgeStatusTest {
         assertEquals(switched, switched.acceptReading(reading))
     }
 
+    @Test fun readingBeforeSetupCompletionDoesNotClaimConnection() {
+        val pending = BridgeSnapshot(peerId = "first", receiveState = ReceiveState.READING)
+        val result = pending.acceptReading(reading, connected = false)
+        assertEquals(ReceiveState.READING, result.receiveState)
+        assertEquals(reading, result.lastReading)
+    }
+
     @Test fun invalidBatteryValueDoesNotReplaceLastReading() {
         val connected = BridgeSnapshot(peerId = "first", lastReading = reading)
         assertEquals(connected, connected.acceptReading(reading.copy(level = 255)))

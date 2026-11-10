@@ -25,9 +25,10 @@ data class BridgeSnapshot(
 private fun BridgeSnapshot.withEvent(description: String): BridgeSnapshot =
     copy(events = (events + StatusEvent(System.currentTimeMillis(), description)).takeLast(8))
 
-internal fun BridgeSnapshot.acceptReading(reading: LastReading): BridgeSnapshot =
+internal fun BridgeSnapshot.acceptReading(reading: LastReading, connected: Boolean = true): BridgeSnapshot =
     if (peerId != reading.peerId || reading.level !in 0..100) this
-    else copy(receiveState = ReceiveState.CONNECTED, receiveDetail = null, lastReading = reading)
+    else if (connected) copy(receiveState = ReceiveState.CONNECTED, receiveDetail = null, lastReading = reading)
+    else copy(lastReading = reading)
 
 internal fun BridgeSnapshot.visibleReading(): LastReading? =
     lastReading?.takeIf { peerId == null || it.peerId == peerId }
@@ -100,13 +101,13 @@ object BridgeStatus {
         if (mutable.value.receiveState != ReceiveState.ERROR) receive(ReceiveState.STOPPED)
     }
 
-    @Synchronized fun recordReading(context: Context, peerId: String, peerName: String, level: Int, charging: Boolean? = null, plugged: Boolean? = null) {
+    @Synchronized fun recordReading(context: Context, peerId: String, peerName: String, level: Int, charging: Boolean? = null, plugged: Boolean? = null, connected: Boolean = true) {
         if (level !in 0..100) return
         val reading = LastReading(peerId, peerName, level, System.currentTimeMillis(), charging, plugged)
         if (mutable.value.peerId != peerId) return
         mutable.update {
-            val next = it.acceptReading(reading)
-            if (next === it || it.receiveState == ReceiveState.CONNECTED) next else next.withEvent("받기 · 읽기 성공")
+            val next = it.acceptReading(reading, connected)
+            if (next === it || !connected || it.receiveState == ReceiveState.CONNECTED) next else next.withEvent("받기 · 읽기 성공")
         }
         context.applicationContext.getSharedPreferences("bridge_status", Context.MODE_PRIVATE).edit {
             putString("peer_id", peerId)
