@@ -50,6 +50,7 @@ class BatteryService : Service() {
     private fun ByteArray?.diagnosticValue(): String = this?.joinToString(":") { "%02x".format(it.toInt() and 0xff) } ?: "null"
     private val notificationRecovery = NotificationRecovery()
     private var notificationRetryPending = false
+    private var retryAfterPeer: BluetoothDevice? = null
     private val retryNotifications = Runnable { notificationRetryPending = false; notifySubscribers() }
     @Volatile private var sessionProtocol = SessionHandshake.Server(newSessionId(), android.os.SystemClock::elapsedRealtime)
     @Volatile private var statusValue = BatteryStatusCodec.encode(0, 0, false, false)
@@ -67,7 +68,7 @@ class BatteryService : Service() {
     @Volatile private var battery = 0
     @Volatile private var generation = 0
     private var waitingForBluetooth = false
-    private var lastPeerRecovery = 0L
+    private val lastPeerRecovery = mutableMapOf<String, Long>()
     private var readyUntil = 0L
     // Separate from BLE callbacks: restarting Bluetooth must not cancel the safety deadline.
     private val leaseHandler = Handler(Looper.getMainLooper())
@@ -293,7 +294,7 @@ class BatteryService : Service() {
                 handler.removeCallbacks(notificationTimeout)
                 notifying = null
                 notificationDetails = null
-                if (status != BluetoothGatt.GATT_SUCCESS) scheduleNotificationRetry()
+                if (status != BluetoothGatt.GATT_SUCCESS) scheduleNotificationRetry(device)
                 else {
                     notificationRecovery.success()
                     handler.removeCallbacks(retryNotifications)
@@ -330,7 +331,7 @@ class BatteryService : Service() {
                     val valid = characteristic.uuid == HANDSHAKE && !preparedWrite && responseNeeded &&
                         offset == 0 && device.bondState == BluetoothDevice.BOND_BONDED &&
                         BridgeSession.hasPermissions(this@BatteryService)
-                    val current = BridgeSession.savedPeer(this@BatteryService) == device.address
+                    val current = BridgeSession.contains(this@BatteryService, device.address)
                     val command = BridgeControl.accept(value, valid, current,
                         android.os.SystemClock.elapsedRealtime() < readyUntil)
                     if (command == BridgeControl.Command.JOIN) {
@@ -345,11 +346,11 @@ class BatteryService : Service() {
                         }
                     } else if (command == BridgeControl.Command.RECOVER) {
                         val now = android.os.SystemClock.elapsedRealtime()
-                        val allowed = RecoveryTiming.canAccept(now, lastPeerRecovery)
+                        val allowed = RecoveryTiming.canAccept(now, lastPeerRecovery[device.address] ?: 0L)
                         val started = if (allowed) try {
                             startForegroundService(Intent(this@BatteryService, ReceiverService::class.java)
-                                .setAction(ReceiverService.ACTION_RECOVERY_PAUSE))
-                            lastPeerRecovery = now
+                                .setAction(ReceiverService.ACTION_RECOVERY_PAUSE).putExtra("address", device.address))
+                            lastPeerRecovery[device.address] = now
                             true
                         } catch (e: RuntimeException) {
                             Log.w(TAG, "could not start battery profile recovery", e)
@@ -358,12 +359,17 @@ class BatteryService : Service() {
                         server?.sendResponse(device, requestId,
                             if (started) BluetoothGatt.GATT_SUCCESS else BluetoothGatt.GATT_FAILURE, 0, null)
                     } else if (command == BridgeControl.Command.STOP) {
-                        BridgeSession.disable(this@BatteryService)
+                        BridgeSession.removePeer(this@BatteryService, device.address)
                         server?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, 0, null)
                         leaseHandler.postDelayed({
-                            BridgeSession.stop(this@BatteryService)
-                            BridgeStatus.send(SendState.STOPPED, "상대 기기에서 연결을 중지했어요.")
-                            BridgeStatus.receive(ReceiveState.STOPPED)
+                            if (BridgeSession.contains(this@BatteryService, device.address)) return@postDelayed
+                            try {
+                                startForegroundService(Intent(this@BatteryService, ReceiverService::class.java)
+                                    .setAction(ReceiverService.ACTION_REMOVE_LOCAL).putExtra("address", device.address))
+                            } catch (e: RuntimeException) {
+                                Log.w(TAG, "could not remove peer connection", e)
+                            }
+                            if (BridgeSession.savedPeers(this@BatteryService).isEmpty()) stopSelf()
                         }, 300)
                     } else if (responseNeeded) server?.sendResponse(device, requestId, BluetoothGatt.GATT_FAILURE, 0, null)
                 } catch (e: SecurityException) { Log.e(TAG, "Handshake failed", e) }
@@ -436,11 +442,20 @@ class BatteryService : Service() {
                 }
                 Log.i(TAG, "notification enqueue generation=$generation subscriptions=${subscribed.size} queued=${notifications.size}")
             }
+            if (!notificationRetryPending) {
+                retryAfterPeer?.let { failed ->
+                    val delayed = notifications.filterKeys { it.first == failed }
+                    delayed.keys.forEach { notifications.remove(it) }
+                    notifications.putAll(delayed)
+                }
+                retryAfterPeer = null
+            }
             drainNotifications()
         }
     }
 
-    private fun scheduleNotificationRetry() {
+    private fun scheduleNotificationRetry(peer: BluetoothDevice) {
+        retryAfterPeer = peer
         notificationRetryPending = true
         handler.removeCallbacks(retryNotifications)
         handler.postDelayed(retryNotifications, notificationRecovery.failureDelay())
@@ -476,7 +491,7 @@ class BatteryService : Service() {
                 notifying = null
                 notificationDetails = null
                 // Re-enqueue latest values after a busy/error response, rather than losing a change.
-                scheduleNotificationRetry()
+                scheduleNotificationRetry(key.first)
                 return
             } catch (e: SecurityException) {
                 notifying = null
@@ -488,7 +503,7 @@ class BatteryService : Service() {
 
     private fun isAuthorizedPeer(device: BluetoothDevice): Boolean = try {
         device.bondState == BluetoothDevice.BOND_BONDED &&
-            device.address.equals(BridgeSession.savedPeer(this), ignoreCase = true)
+            BridgeSession.contains(this, device.address)
     } catch (_: SecurityException) {
         false
     }
@@ -500,6 +515,7 @@ class BatteryService : Service() {
         notifications.clear()
         notificationRecovery.clear()
         notificationRetryPending = false
+        retryAfterPeer = null
         notifying = null
         notificationDetails = null
         try {

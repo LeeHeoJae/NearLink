@@ -9,10 +9,11 @@ import android.util.Log
 class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != Intent.ACTION_BOOT_COMPLETED) return
-        val address = BridgeSession.savedPeer(context) ?: return
+        val addresses = BridgeSession.savedPeers(context)
+        if (addresses.isEmpty()) return
         if (!BridgeSession.hasPermissions(context)) return
         try {
-            BridgeSession.start(context, address)
+            addresses.forEach { BridgeSession.start(context, it) }
         } catch (e: Exception) {
             Log.e("BridgeBoot", "Could not restore connection after boot", e)
         }

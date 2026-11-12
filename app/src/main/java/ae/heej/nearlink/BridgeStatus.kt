@@ -10,6 +10,13 @@ enum class SendState { STOPPED, STARTING, ADVERTISING, WAITING_FOR_BLUETOOTH, ER
 enum class ReceiveState { STOPPED, SEARCHING, CONNECTING, READING, CONNECTED, RETRYING, WAITING_FOR_BLUETOOTH, ERROR }
 
 data class LastReading(val peerId: String, val peerName: String, val level: Int, val timeMillis: Long, val charging: Boolean? = null, val plugged: Boolean? = null)
+data class PeerSnapshot(
+    val peerId: String,
+    val peerName: String = "선택한 기기",
+    val receiveState: ReceiveState = ReceiveState.STOPPED,
+    val detail: String? = null,
+    val lastReading: LastReading? = null,
+)
 data class StatusEvent(val timeMillis: Long, val description: String)
 data class BridgeSnapshot(
     val sendState: SendState = SendState.STOPPED,
@@ -20,6 +27,7 @@ data class BridgeSnapshot(
     val peerName: String? = null,
     val lastReading: LastReading? = null,
     val events: List<StatusEvent> = emptyList(),
+    val peers: Map<String, PeerSnapshot> = emptyMap(),
 )
 
 private fun BridgeSnapshot.withEvent(description: String): BridgeSnapshot =
@@ -33,8 +41,15 @@ internal fun BridgeSnapshot.acceptReading(reading: LastReading, connected: Boole
 internal fun BridgeSnapshot.visibleReading(): LastReading? =
     lastReading?.takeIf { peerId == null || it.peerId == peerId }
 
+internal fun BridgeSnapshot.withPeerReading(reading: LastReading, connected: Boolean): BridgeSnapshot {
+    if (reading.level !in 0..100) return this
+    val peer = peers[reading.peerId] ?: PeerSnapshot(reading.peerId, reading.peerName)
+    return copy(peers = peers + (reading.peerId to peer.copy(peerName = reading.peerName, lastReading = reading,
+        receiveState = if (connected) ReceiveState.CONNECTED else peer.receiveState)))
+}
+
 /** Pairing/advertising alone is not onboarding completion; a valid battery read is. */
-internal fun BridgeSnapshot.hasCompletedSetup(): Boolean = visibleReading() != null
+internal fun BridgeSnapshot.hasCompletedSetup(): Boolean = visibleReading() != null || peers.values.any { it.lastReading != null }
 
 /** Services and the activity run in the same process; only the historical reading is persisted. */
 object BridgeStatus {
@@ -53,6 +68,27 @@ object BridgeStatus {
             mutable.update { it.copy(lastReading = LastReading(peerId, name, level, time,
                 if (prefs.contains("charging")) prefs.getBoolean("charging", false) else null,
                 if (prefs.contains("plugged")) prefs.getBoolean("plugged", false) else null)) }
+        }
+        val histories = context.applicationContext.getSharedPreferences("bridge_peer_readings", Context.MODE_PRIVATE)
+        val addresses = BridgeSession.savedPeers(context) + listOfNotNull(peerId) + histories.all.keys.mapNotNull { key ->
+            when {
+                key.endsWith(".level") -> key.removeSuffix(".level")
+                key.endsWith(".stop_unconfirmed") -> key.removeSuffix(".stop_unconfirmed")
+                else -> null
+            }
+        }
+        addresses.forEach { address ->
+            val storedName = histories.getString("$address.name", null)
+            val storedLevel = histories.getInt("$address.level", -1)
+            val storedTime = histories.getLong("$address.time", 0)
+            val old = mutable.value.lastReading?.takeIf { it.peerId == address }
+            val reading = if (storedName != null && storedLevel in 0..100 && storedTime > 0)
+                LastReading(address, storedName, storedLevel, storedTime,
+                    if (histories.contains("$address.charging")) histories.getBoolean("$address.charging", false) else null,
+                    if (histories.contains("$address.plugged")) histories.getBoolean("$address.plugged", false) else null)
+                else old
+            mutable.update { it.copy(peers = it.peers + (address to PeerSnapshot(address, reading?.peerName ?: "선택한 기기", lastReading = reading,
+                detail = if (histories.getBoolean("$address.stop_unconfirmed", false)) BridgeSession.STOP_UNCONFIRMED else null))) }
         }
         BridgeSession.stopNotice(context)?.let { notice -> mutable.update { it.copy(sendDetail = notice) } }
         initialized = true
@@ -77,7 +113,24 @@ object BridgeStatus {
     }
 
     @Synchronized fun selectPeer(peerId: String, peerName: String) {
-        mutable.update { it.copy(peerId = peerId, peerName = peerName) }
+        mutable.update { snapshot ->
+            val peer = (snapshot.peers[peerId] ?: PeerSnapshot(peerId)).copy(peerName = peerName)
+            snapshot.copy(peerId = peerId, peerName = peerName, peers = snapshot.peers + (peerId to peer))
+        }
+    }
+
+    fun receivePeer(peerId: String, state: ReceiveState, detail: String? = null) {
+        mutable.update { snapshot ->
+            val peer = (snapshot.peers[peerId] ?: PeerSnapshot(peerId)).copy(receiveState = state, detail = detail)
+            snapshot.copy(peers = snapshot.peers + (peerId to peer))
+        }
+    }
+
+    fun peerStopped(context: Context, peerId: String, confirmed: Boolean) {
+        context.applicationContext.getSharedPreferences("bridge_peer_readings", Context.MODE_PRIVATE).edit {
+            if (confirmed) remove("$peerId.stop_unconfirmed") else putBoolean("$peerId.stop_unconfirmed", true)
+        }
+        receivePeer(peerId, ReceiveState.STOPPED, if (confirmed) "연결을 중지했어요." else BridgeSession.STOP_UNCONFIRMED)
     }
 
     fun receive(state: ReceiveState, detail: String? = null) {
@@ -104,6 +157,14 @@ object BridgeStatus {
     @Synchronized fun recordReading(context: Context, peerId: String, peerName: String, level: Int, charging: Boolean? = null, plugged: Boolean? = null, connected: Boolean = true) {
         if (level !in 0..100) return
         val reading = LastReading(peerId, peerName, level, System.currentTimeMillis(), charging, plugged)
+        mutable.update { it.withPeerReading(reading, connected) }
+        context.applicationContext.getSharedPreferences("bridge_peer_readings", Context.MODE_PRIVATE).edit {
+            putString("$peerId.name", peerName)
+            putInt("$peerId.level", level)
+            putLong("$peerId.time", reading.timeMillis)
+            if (charging == null) remove("$peerId.charging") else putBoolean("$peerId.charging", charging)
+            if (plugged == null) remove("$peerId.plugged") else putBoolean("$peerId.plugged", plugged)
+        }
         if (mutable.value.peerId != peerId) return
         mutable.update {
             val next = it.acceptReading(reading, connected)

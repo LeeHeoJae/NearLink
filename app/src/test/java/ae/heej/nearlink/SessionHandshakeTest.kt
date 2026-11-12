@@ -74,4 +74,15 @@ class SessionHandshakeTest {
         now = 60_000
         assertTrue(client.acceptReady(s.response("peer")!!))
     }
+    @Test fun simultaneousPeerSessionsStayIndependent() {
+        val s = server()
+        assertTrue(s.hello("a", packet(SessionHandshake.HELLO, request = 11)))
+        assertTrue(s.hello("b", packet(SessionHandshake.HELLO, request = 22)))
+        assertFalse(s.acknowledge("a", packet(SessionHandshake.ACK, request = 22), true))
+        assertTrue(s.acknowledge("a", packet(SessionHandshake.ACK, request = 11), true))
+        assertTrue(s.acknowledge("b", packet(SessionHandshake.ACK, request = 22), true))
+        s.forget("a")
+        assertNull(s.response("a"))
+        assertEquals(22L, SessionHandshake.decode(s.response("b")!!)!!.request)
+    }
 }

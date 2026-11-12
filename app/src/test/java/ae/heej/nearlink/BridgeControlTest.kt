@@ -21,7 +21,13 @@ class BridgeControlTest {
         assertEquals(BridgeControl.Command.REJECT, BridgeControl.accept(byteArrayOf(2), true, false, true))
         assertEquals(BridgeControl.Command.REJECT, BridgeControl.accept(byteArrayOf(), true, true, true))
         assertEquals(BridgeControl.Command.REJECT, BridgeControl.accept(byteArrayOf(2, 1), true, true, true))
-        assertEquals(BridgeControl.Command.REJECT, BridgeControl.accept(byteArrayOf(4), true, true, true))
+        assertEquals(BridgeControl.Command.REJECT, BridgeControl.accept(byteArrayOf(5), true, true, true))
+    }
+
+    @Test fun peerScopedStopRequiresAuthenticatedCurrentPeer() {
+        assertEquals(BridgeControl.Command.STOP, BridgeControl.accept(byteArrayOf(4), true, true, false))
+        assertEquals(BridgeControl.Command.REJECT, BridgeControl.accept(byteArrayOf(4), true, false, true))
+        assertEquals(BridgeControl.Command.REJECT, BridgeControl.accept(byteArrayOf(4), false, true, true))
     }
 
     @Test fun recoveryRequiresAuthenticatedCurrentPeer() {

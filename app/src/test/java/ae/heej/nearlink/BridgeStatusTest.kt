@@ -77,4 +77,25 @@ class BridgeStatusTest {
         assertTrue(received.hasCompletedSetup())
         assertEquals("새 기기", received.visibleReading()?.peerName)
     }
+    @Test fun readingsFromDifferentPeersStayIndependent() {
+        val second = LastReading("second", "둘째 기기", 24, 5678)
+        val snapshot = BridgeSnapshot().withPeerReading(reading, true).withPeerReading(second, false)
+        assertEquals(reading, snapshot.peers["first"]?.lastReading)
+        assertEquals(ReceiveState.CONNECTED, snapshot.peers["first"]?.receiveState)
+        assertEquals(second, snapshot.peers["second"]?.lastReading)
+        assertEquals(ReceiveState.STOPPED, snapshot.peers["second"]?.receiveState)
+        assertEquals(snapshot, snapshot.withPeerReading(second.copy(level = 101), true))
+        assertTrue(snapshot.hasCompletedSetup())
+    }
+
+    @Test fun changingOnePeersConnectionDoesNotChangeAnotherPeer() {
+        BridgeStatus.selectPeer("isolation-a", "A")
+        BridgeStatus.selectPeer("isolation-b", "B")
+        BridgeStatus.receivePeer("isolation-a", ReceiveState.CONNECTED)
+        BridgeStatus.receivePeer("isolation-b", ReceiveState.RETRYING, "다시 시도")
+        assertEquals(ReceiveState.CONNECTED, BridgeStatus.state.value.peers["isolation-a"]?.receiveState)
+        assertEquals(ReceiveState.RETRYING, BridgeStatus.state.value.peers["isolation-b"]?.receiveState)
+        BridgeStatus.receivePeer("isolation-b", ReceiveState.STOPPED)
+        assertEquals(ReceiveState.CONNECTED, BridgeStatus.state.value.peers["isolation-a"]?.receiveState)
+    }
 }

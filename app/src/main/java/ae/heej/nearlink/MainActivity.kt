@@ -31,6 +31,7 @@ class MainActivity : ComponentActivity() {
     private var message by mutableStateOf<String?>(null)
     private var peers by mutableStateOf<List<BluetoothDevice>?>(null)
     private var pendingAction: Action? = null
+    private var pendingPeer: String? = null
     private var setupRequested by mutableStateOf(false)
     private var preparationNotice by mutableStateOf<String?>(null)
     private var showBatteryRecommendation by mutableStateOf(false)
@@ -77,7 +78,8 @@ class MainActivity : ComponentActivity() {
                     BridgeScreen(status, message ?: pairing.message ?: preparationNotice.takeIf { !status.hasCompletedSetup() || setupRequested },
                         message != null || (pairing.message != null && !pairing.busy), pairing.busy, ::requestSend, ::requestConnect,
                         { ensurePermissions(Action.ADD) }, ::stopBridge,
-                        onReconnect = { ensurePermissions(Action.RESUME) }, setupRequested = setupRequested,
+                        onReconnect = { address -> pendingPeer = address; ensurePermissions(Action.RESUME) },
+                        onStopPeer = { address -> BridgeSession.requestStop(this, address) }, setupRequested = setupRequested,
                         onSetupRequested = { setupRequested = true }, onDismissSetup = { setupRequested = false })
                 }
                 peers?.let { devices ->
@@ -120,7 +122,7 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         startReadyPeer()
         if (!pairing.busy && pairing.readyAddress == null) {
-            BridgeSession.savedPeer(this)?.let { address ->
+            BridgeSession.savedPeers(this).forEach { address ->
                 if (BridgeSession.hasPermissions(this)) {
                     try { BridgeSession.start(this, address) }
                     catch (_: Exception) { message = "자동 연결을 시작하지 못했습니다. 기기를 다시 선택해 주세요." }
@@ -186,7 +188,8 @@ class MainActivity : ComponentActivity() {
                 }
                 Action.RESUME -> {
                     val snapshot = BridgeStatus.state.value
-                    val address = snapshot.peerId ?: snapshot.visibleReading()?.peerId
+                    val address = pendingPeer ?: snapshot.peerId ?: snapshot.visibleReading()?.peerId
+                    pendingPeer = null
                     if (address == null) message = "기기를 다시 선택해 주세요."
                     else {
                         BridgeSession.start(this, address)

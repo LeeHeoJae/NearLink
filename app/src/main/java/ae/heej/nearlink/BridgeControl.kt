@@ -10,6 +10,7 @@ internal object BridgeControl {
             1 -> if (currentPeer || prepared) Command.JOIN else Command.REJECT
             2 -> if (currentPeer) Command.STOP else Command.REJECT
             3 -> if (currentPeer) Command.RECOVER else Command.REJECT
+            4 -> if (currentPeer) Command.STOP else Command.REJECT
             else -> Command.REJECT
         }
     }
