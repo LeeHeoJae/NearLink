@@ -90,6 +90,38 @@ impl Peer {
             format!("{}시간 전", seconds / 3600)
         }
     }
+
+    /// Battery notifications may be quiet while the value is unchanged. Age is
+    /// a data-freshness hint, never evidence that the BLE connection has failed.
+    pub fn stale(&self) -> bool {
+        self.updated
+            .is_some_and(|t| t.elapsed().unwrap_or_default().as_secs() >= 900)
+    }
+    pub fn status_text(&self) -> String {
+        let state = match self.state {
+            State::Retrying => "연결 끊김 · 재연결 대기",
+            State::Stopped => "수신 중지됨",
+            State::Connected => "연결됨 · 배터리 수신 중",
+            _ => self.state.text(),
+        };
+        if self.stale() {
+            format!("{state} · 오래된 값")
+        } else if self.updated.is_some() && self.state != State::Connected {
+            format!("{state} · 마지막 값")
+        } else {
+            state.into()
+        }
+    }
+    pub fn accessible_text(&self) -> String {
+        format!(
+            "{} · {} · {} · {} · 마지막 수신 {}",
+            self.saved.label(),
+            self.battery_text(),
+            self.charge_text(),
+            self.status_text(),
+            self.age_text()
+        )
+    }
 }
 
 #[derive(Default)]
@@ -195,6 +227,23 @@ impl Model {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn freshness_is_distinct_from_connection_and_always_exposed_as_text() {
+        let mut peer = Peer::new(SavedPeer::new(1, "태블릿".into(), false));
+        assert!(!peer.stale());
+        assert!(peer.accessible_text().contains("수신 전"));
+        peer.level = Some(73);
+        peer.state = State::Connected;
+        peer.updated = Some(SystemTime::now() - std::time::Duration::from_secs(901));
+        assert!(peer.status_text().contains("오래된 값"));
+        assert!(peer.status_text().contains("연결됨"));
+        peer.state = State::Retrying;
+        assert!(peer.status_text().contains("연결 끊김"));
+        peer.updated = Some(SystemTime::now());
+        assert!(peer.status_text().contains("마지막 값"));
+        peer.state = State::Stopped;
+        assert!(peer.accessible_text().contains("수신 중지됨"));
+    }
     #[test]
     fn alerts_do_not_repeat_and_rearm_with_hysteresis() {
         let mut alerts = Alerts::default();

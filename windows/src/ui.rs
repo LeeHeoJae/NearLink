@@ -4,6 +4,7 @@ use crate::{
     ble::{Engine, Wake},
     config::{self, SavedPeer},
     model::{Model, Peer, Shared, State},
+    theme::{self, Theme},
 };
 use std::{
     cell::RefCell,
@@ -18,7 +19,7 @@ use windows::{
         UI::{
             Controls::*,
             HiDpi::*,
-            Input::KeyboardAndMouse::{EnableWindow, SetFocus},
+            Input::KeyboardAndMouse::{EnableWindow, GetFocus, IsWindowEnabled, SetFocus},
             Shell::*,
             WindowsAndMessaging::*,
         },
@@ -30,6 +31,7 @@ const CLASS: PCWSTR = w!("NearLink.NativeWindow.v1");
 const WAKE: u32 = WM_APP + 1;
 const TRAY: u32 = WM_APP + 2;
 const SHOW: u32 = WM_APP + 3;
+const REDRAW: u32 = WM_APP + 4;
 const ADD: usize = 100;
 const RETRY: usize = 101;
 const STOP: usize = 102;
@@ -37,6 +39,9 @@ const ALIAS: usize = 103;
 const FORGET: usize = 104;
 const SETTINGS: usize = 105;
 const LIST: usize = 110;
+const OPEN_MAIN: usize = 106;
+const QUIT: usize = 107;
+const ACTIONS: usize = 108;
 const CONNECT: usize = 201;
 const SEARCH: usize = 202;
 const BT_SETTINGS: usize = 203;
@@ -46,6 +51,8 @@ const INPUT: usize = 210;
 const ALERTS: usize = 211;
 const FULL: usize = 212;
 const STARTUP: usize = 213;
+// STATIC control's documented SS_CENTER style (winuser.h).
+const SS_CENTER: u32 = 1;
 
 fn wide(value: &str) -> Vec<u16> {
     value.encode_utf16().chain(Some(0)).collect()
@@ -94,8 +101,17 @@ struct App {
     host: HWND,
     main: HWND,
     list: HWND,
+    quick: HWND,
+    quick_list: HWND,
     info: HWND,
     font: HFONT,
+    heading: HFONT,
+    name_font: HFONT,
+    battery_font: HFONT,
+    row_images: HIMAGELIST,
+    theme: Theme,
+    text_scale: u32,
+    preview: bool,
     icon: HICON,
     instance: HINSTANCE,
     taskbar_message: u32,
@@ -110,6 +126,10 @@ struct App {
 
 pub fn run() -> Result<(), String> {
     unsafe {
+        let preview = theme::preview();
+        if preview && !std::env::args().any(|a| a == "--data-dir") {
+            return Err("미리 보기에는 별도 --data-dir 폴더를 지정하세요.".into());
+        }
         let directory = config::directory()?;
         std::fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
         // A separate profile is also a separate instance, useful for development and verification.
@@ -135,7 +155,11 @@ pub fn run() -> Result<(), String> {
             return Ok(());
         }
         let settings = config::load(&directory)?;
-        let model = Arc::new(Mutex::new(Model::new(settings)));
+        let mut initial = Model::new(settings);
+        if preview {
+            preview_model(&mut initial);
+        }
+        let model = Arc::new(Mutex::new(initial));
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         let _ = InitCommonControlsEx(&INITCOMMONCONTROLSEX {
             dwSize: size_of::<INITCOMMONCONTROLSEX>() as u32,
@@ -180,8 +204,17 @@ pub fn run() -> Result<(), String> {
             host,
             main: HWND::default(),
             list: HWND::default(),
+            quick: HWND::default(),
+            quick_list: HWND::default(),
             info: HWND::default(),
             font: HFONT::default(),
+            heading: HFONT::default(),
+            name_font: HFONT::default(),
+            battery_font: HFONT::default(),
+            row_images: HIMAGELIST::default(),
+            theme: Theme::load(),
+            text_scale: theme::text_scale(),
+            preview,
             icon,
             instance,
             taskbar_message: RegisterWindowMessageW(w!("TaskbarCreated")),
@@ -210,8 +243,11 @@ pub fn run() -> Result<(), String> {
             .filter(|p| p.saved.enabled)
             .map(|p| p.saved.address)
             .collect();
-        for address in addresses {
+        for address in addresses.into_iter().filter(|_| !preview) {
             app.borrow_mut().engine.start(address, false);
+        }
+        if std::env::args().any(|a| a == "--quick-view") {
+            app.borrow_mut().show_quick().map_err(|e| e.to_string())?;
         }
         let mut message = MSG::default();
         loop {
@@ -226,6 +262,10 @@ pub fn run() -> Result<(), String> {
             if dialog.is_some_and(|hwnd| IsDialogMessageW(hwnd, &message).as_bool()) {
                 continue;
             }
+            let quick = app.borrow().quick;
+            if !quick.is_invalid() && IsDialogMessageW(quick, &message).as_bool() {
+                continue;
+            }
             let main = app.borrow().main;
             if !main.is_invalid() && IsDialogMessageW(main, &message).as_bool() {
                 continue;
@@ -236,8 +276,18 @@ pub fn run() -> Result<(), String> {
         let mut state = app.borrow_mut();
         state.engine.cancel_scan();
         state.remove_tray();
-        if !state.font.is_invalid() {
-            let _ = DeleteObject(state.font.into());
+        for font in [
+            state.font,
+            state.heading,
+            state.name_font,
+            state.battery_font,
+        ] {
+            if !font.is_invalid() {
+                let _ = DeleteObject(font.into());
+            }
+        }
+        if !state.row_images.is_invalid() {
+            let _ = ImageList_Destroy(Some(state.row_images));
         }
         let _ = DestroyIcon(state.icon);
         let _ = DestroyWindow(host);
@@ -256,6 +306,30 @@ unsafe extern "system" fn window_proc(
     if pointer.is_null() {
         return DefWindowProcW(hwnd, message, wparam, lparam);
     }
+    // Layout/control creation can paint synchronously while App is borrowed.
+    // Repaint after that operation, without holding App across nested messages.
+    if message == REDRAW {
+        let windows = if let Ok(app) = (*pointer).try_borrow() {
+            [
+                app.main,
+                app.quick,
+                app.dialog.as_ref().map(|d| d.hwnd).unwrap_or_default(),
+            ]
+        } else {
+            return LRESULT(0);
+        };
+        for window in windows {
+            if !window.is_invalid() && IsWindowVisible(window).as_bool() {
+                let _ = RedrawWindow(
+                    Some(window),
+                    None,
+                    None,
+                    RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW,
+                );
+            }
+        }
+        return LRESULT(0);
+    }
     // Win32 may synchronously reenter this procedure (control creation, dialogs, layout).
     // RefCell prevents aliasing mutable application state across those callbacks.
     let Ok(mut state) = (*pointer).try_borrow_mut() else {
@@ -264,15 +338,57 @@ unsafe extern "system" fn window_proc(
     // Ignore synchronous control/paint messages before borrowing application state.
     match message {
         WAKE | SHOW | TRAY | WM_COMMAND | WM_NOTIFY | WM_CLOSE | WM_SIZE | WM_TIMER
-        | WM_DPICHANGED | WM_GETMINMAXINFO | WM_ENDSESSION => {}
+        | WM_DPICHANGED | WM_GETMINMAXINFO | WM_ENDSESSION | WM_ERASEBKGND | WM_CTLCOLORSTATIC
+        | WM_CTLCOLOREDIT | WM_CTLCOLORLISTBOX | WM_CTLCOLORBTN | WM_SETTINGCHANGE
+        | WM_THEMECHANGED | WM_SYSCOLORCHANGE | WM_CONTEXTMENU | WM_ACTIVATE => {}
         other if other == state.taskbar_message => {
             let _ = state.add_tray();
             return LRESULT(0);
         }
-        _ => return DefWindowProcW(hwnd, message, wparam, lparam),
+        _ => {
+            drop(state);
+            return DefWindowProcW(hwnd, message, wparam, lparam);
+        }
     }
     let app = &mut *state;
     match message {
+        WM_ERASEBKGND => {
+            let mut rect = RECT::default();
+            let _ = GetClientRect(hwnd, &mut rect);
+            FillRect(HDC(wparam.0 as *mut _), &rect, app.theme.brush);
+            LRESULT(1)
+        }
+        WM_CTLCOLORSTATIC | WM_CTLCOLORBTN | WM_CTLCOLOREDIT | WM_CTLCOLORLISTBOX => {
+            let dc = HDC(wparam.0 as *mut _);
+            SetTextColor(dc, app.theme.text);
+            let input = message == WM_CTLCOLOREDIT || message == WM_CTLCOLORLISTBOX;
+            SetBkColor(
+                dc,
+                if input {
+                    app.theme.surface
+                } else {
+                    app.theme.background
+                },
+            );
+            LRESULT(if input {
+                app.theme.surface_brush.0
+            } else {
+                app.theme.brush.0
+            } as isize)
+        }
+        WM_SETTINGCHANGE | WM_THEMECHANGED | WM_SYSCOLORCHANGE => {
+            app.appearance();
+            LRESULT(0)
+        }
+        WM_CONTEXTMENU if HWND(wparam.0 as *mut _) == app.list => {
+            app.device_menu();
+            LRESULT(0)
+        }
+        WM_ACTIVATE if hwnd == app.quick && wparam.0 & 0xffff == WA_INACTIVE as usize => {
+            let _ = ShowWindow(app.quick, SW_HIDE);
+            let _ = KillTimer(Some(app.quick), 1);
+            LRESULT(0)
+        }
         WAKE => {
             app.refresh();
             app.notices();
@@ -292,7 +408,15 @@ unsafe extern "system" fn window_proc(
         }
         WM_NOTIFY => {
             let header = &*(lparam.0 as *const NMHDR);
-            if hwnd == app.main && header.idFrom == LIST && header.code == LVN_GETEMPTYMARKUP {
+            if header.code == NM_CUSTOMDRAW {
+                if header.hwndFrom == app.list || header.hwndFrom == app.quick_list {
+                    return app.draw_list(&mut *(lparam.0 as *mut NMLVCUSTOMDRAW));
+                }
+                if GetClassNameW(header.hwndFrom, &mut [0u16; 32]) > 0 {
+                    return app.draw_button(&mut *(lparam.0 as *mut NMCUSTOMDRAW));
+                }
+            }
+            if header.idFrom == LIST && header.code == LVN_GETEMPTYMARKUP {
                 let markup = &mut *(lparam.0 as *mut NMLVEMPTYMARKUP);
                 markup.dwFlags = EMF_CENTERED;
                 copy_wide(
@@ -304,25 +428,41 @@ unsafe extern "system" fn window_proc(
             if hwnd == app.main && header.idFrom == LIST && header.code == LVN_ITEMCHANGED {
                 app.selection();
             }
-            LRESULT(0)
-        }
-        WM_SIZE => {
-            if hwnd == app.main {
-                app.layout();
+            if header.idFrom == LIST
+                && (header.code == NM_DBLCLK || header.code == LVN_ITEMACTIVATE)
+            {
+                if hwnd == app.quick {
+                    let _ = app.show_main();
+                } else {
+                    app.device_menu();
+                }
             }
             LRESULT(0)
         }
-        WM_GETMINMAXINFO if hwnd == app.main => {
+        WM_SIZE => {
+            if hwnd == app.main || hwnd == app.quick {
+                app.layout();
+                let _ = PostMessageW(Some(app.host), REDRAW, WPARAM(0), LPARAM(0));
+            }
+            LRESULT(0)
+        }
+        WM_GETMINMAXINFO if hwnd == app.main || hwnd == app.quick => {
             let info = &mut *(lparam.0 as *mut MINMAXINFO);
+            let work = app.work_area(hwnd);
             info.ptMinTrackSize = POINT {
-                x: app.s(780),
-                y: app.s(450),
+                x: app
+                    .s(if hwnd == app.quick { 390 } else { 620 })
+                    .min(work.right - work.left),
+                y: app
+                    .s(if hwnd == app.quick { 320 } else { 520 })
+                    .min(work.bottom - work.top),
             };
             LRESULT(0)
         }
-        WM_DPICHANGED if hwnd == app.main => {
+        WM_DPICHANGED => {
             app.dpi = (wparam.0 & 0xffff) as u32;
             app.update_font();
+            app.resize_rows();
             let bounds = &*(lparam.0 as *const RECT);
             let _ = SetWindowPos(
                 hwnd,
@@ -334,21 +474,18 @@ unsafe extern "system" fn window_proc(
                 SWP_NOZORDER | SWP_NOACTIVATE,
             );
             app.layout();
+            app.layout_dialog();
             LRESULT(0)
         }
         WM_CLOSE => {
             if app.dialog.as_ref().is_some_and(|d| d.hwnd == hwnd) {
                 app.close_dialog();
-            } else if hwnd == app.main {
-                app.close_dialog();
-                let _ = KillTimer(Some(hwnd), 1);
-                app.main = HWND::default();
-                app.rows.clear();
-                let _ = DestroyWindow(hwnd);
-                if !app.font.is_invalid() {
-                    let _ = DeleteObject(app.font.into());
-                    app.font = HFONT::default();
+            } else if hwnd == app.main || hwnd == app.quick {
+                if hwnd == app.main {
+                    app.close_dialog();
                 }
+                let _ = KillTimer(Some(hwnd), 1);
+                let _ = ShowWindow(hwnd, SW_HIDE);
             }
             LRESULT(0)
         }
@@ -359,7 +496,7 @@ unsafe extern "system" fn window_proc(
         TRAY => {
             let event = lparam.0 as u32 & 0xffff;
             if event == WM_LBUTTONUP || event == NIN_SELECT || event == (NIN_SELECT | 1) {
-                let _ = app.show_main();
+                let _ = app.show_quick();
             } else if event == WM_RBUTTONUP || event == WM_CONTEXTMENU {
                 app.tray_menu();
             }
@@ -370,8 +507,566 @@ unsafe extern "system" fn window_proc(
 }
 
 impl App {
+    unsafe fn work_area(&self, hwnd: HWND) -> RECT {
+        let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        let mut info = MONITORINFO {
+            cbSize: size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        let _ = GetMonitorInfoW(monitor, &mut info);
+        info.rcWork
+    }
+
+    unsafe fn fit_window(&self, hwnd: HWND, width: i32, height: i32) {
+        let work = self.work_area(hwnd);
+        let mut rect = RECT::default();
+        let _ = GetWindowRect(hwnd, &mut rect);
+        let width = self.s(width).min(work.right - work.left);
+        let height = self.s(height).min(work.bottom - work.top);
+        let x = rect
+            .left
+            .clamp(work.left, (work.right - width).max(work.left));
+        let y = rect
+            .top
+            .clamp(work.top, (work.bottom - height).max(work.top));
+        let _ = SetWindowPos(
+            hwnd,
+            None,
+            x,
+            y,
+            width,
+            height,
+            SWP_NOZORDER | SWP_NOACTIVATE,
+        );
+    }
+    fn persist(&self, settings: &config::Settings) -> Result<(), String> {
+        if self.preview {
+            Ok(())
+        } else {
+            config::save(&self.directory, settings)
+        }
+    }
+
+    unsafe fn appearance(&mut self) {
+        self.theme = Theme::load();
+        self.text_scale = theme::text_scale();
+        self.update_font();
+        self.resize_rows();
+        for hwnd in [
+            self.main,
+            self.quick,
+            self.dialog.as_ref().map(|d| d.hwnd).unwrap_or_default(),
+        ] {
+            if hwnd.is_invalid() {
+                continue;
+            }
+            self.theme.window(hwnd);
+            let _ = RedrawWindow(
+                Some(hwnd),
+                None,
+                None,
+                RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN,
+            );
+        }
+        // Text-only accessibility scaling needs larger layout, not just larger glyphs.
+        if !self.main.is_invalid() {
+            let mut rect = RECT::default();
+            let _ = GetWindowRect(self.main, &mut rect);
+            let _ = SetWindowPos(
+                self.main,
+                None,
+                0,
+                0,
+                (rect.right - rect.left).max(self.s(620)),
+                (rect.bottom - rect.top).max(self.s(520)),
+                SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+            );
+        }
+        self.layout();
+        self.layout_dialog();
+        let _ = PostMessageW(Some(self.host), REDRAW, WPARAM(0), LPARAM(0));
+    }
+
+    unsafe fn device_list(&mut self, parent: HWND) -> HWND {
+        let list = self.control(
+            parent,
+            WC_LISTVIEWW,
+            "기기 배터리",
+            WS_TABSTOP
+                | WINDOW_STYLE(
+                    LVS_REPORT
+                        | LVS_SINGLESEL
+                        | LVS_SHOWSELALWAYS
+                        | LVS_NOCOLUMNHEADER
+                        | LVS_SHAREIMAGELISTS,
+                ),
+            LIST,
+        );
+        send(
+            list,
+            LVM_SETEXTENDEDLISTVIEWSTYLE,
+            WPARAM(0),
+            LPARAM((LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_LABELTIP) as isize),
+        );
+        let mut name = wide("기기 배터리");
+        let column = LVCOLUMNW {
+            mask: LVCF_TEXT | LVCF_WIDTH,
+            pszText: windows::core::PWSTR(name.as_mut_ptr()),
+            cx: self.s(500),
+            ..Default::default()
+        };
+        send(
+            list,
+            LVM_INSERTCOLUMNW,
+            WPARAM(0),
+            LPARAM(&column as *const _ as isize),
+        );
+        if self.row_images.is_invalid() {
+            self.row_images = ImageList_Create(1, self.s(124), ILC_COLOR32, 1, 1);
+        }
+        send(
+            list,
+            LVM_SETIMAGELIST,
+            WPARAM(LVSIL_SMALL as usize),
+            LPARAM(self.row_images.0),
+        );
+        send(
+            list,
+            LVM_SETBKCOLOR,
+            WPARAM(0),
+            LPARAM(self.theme.background.0 as isize),
+        );
+        send(
+            list,
+            LVM_SETTEXTCOLOR,
+            WPARAM(0),
+            LPARAM(self.theme.text.0 as isize),
+        );
+        list
+    }
+
+    unsafe fn resize_rows(&mut self) {
+        let old = self.row_images;
+        self.row_images = ImageList_Create(1, self.s(124), ILC_COLOR32, 1, 1);
+        for list in [self.list, self.quick_list] {
+            if list.is_invalid() {
+                continue;
+            }
+            send(
+                list,
+                LVM_SETIMAGELIST,
+                WPARAM(LVSIL_SMALL as usize),
+                LPARAM(self.row_images.0),
+            );
+            send(
+                list,
+                LVM_SETBKCOLOR,
+                WPARAM(0),
+                LPARAM(self.theme.background.0 as isize),
+            );
+            send(
+                list,
+                LVM_SETTEXTCOLOR,
+                WPARAM(0),
+                LPARAM(self.theme.text.0 as isize),
+            );
+        }
+        if !old.is_invalid() {
+            let _ = ImageList_Destroy(Some(old));
+        }
+    }
+
+    unsafe fn show_quick(&mut self) -> windows::core::Result<()> {
+        if self.quick.is_invalid() {
+            if self.font.is_invalid() {
+                self.update_font();
+            }
+            self.quick = CreateWindowExW(
+                WS_EX_TOOLWINDOW | WS_EX_CONTROLPARENT,
+                CLASS,
+                if self.preview {
+                    w!("NearLink · 미리 보기")
+                } else {
+                    w!("NearLink")
+                },
+                WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME | WS_CLIPCHILDREN,
+                0,
+                0,
+                self.s(430),
+                self.s(520),
+                Some(self.host),
+                None,
+                Some(self.instance),
+                None,
+            )?;
+            SetWindowLongPtrW(self.quick, GWLP_USERDATA, self.callback as isize);
+            self.dpi = GetDpiForWindow(self.quick);
+            self.update_font();
+            self.resize_rows();
+            self.control(
+                self.quick,
+                w!("STATIC"),
+                if self.preview {
+                    "기기 배터리 · 미리 보기"
+                } else {
+                    "기기 배터리"
+                },
+                WINDOW_STYLE::default(),
+                300,
+            );
+            self.quick_list = self.device_list(self.quick);
+            self.control(self.quick,w!("STATIC"),"연결한 기기가 없습니다.\r\nAndroid NearLink에서 연결 준비를 누른 뒤 기기를 추가하세요.",WINDOW_STYLE(SS_CENTER),305);
+            self.button(self.quick, "기기 추가(&A)", ADD);
+            self.button(self.quick, "상세 설정(&O)", OPEN_MAIN);
+        }
+        self.theme.window(self.quick);
+        let count = self.model.lock().unwrap().peers.len().clamp(1, 4) as i32;
+        let mut point = POINT::default();
+        let _ = GetCursorPos(&mut point);
+        let monitor = MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST);
+        let mut info = MONITORINFO {
+            cbSize: size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        let _ = GetMonitorInfoW(monitor, &mut info);
+        let work = info.rcWork;
+        let width = self.s(430).min(work.right - work.left);
+        let height = self.s(count * 124 + 150).min(work.bottom - work.top);
+        let x = (point.x - width / 2).clamp(work.left, (work.right - width).max(work.left));
+        let y = (point.y - height).clamp(work.top, (work.bottom - height).max(work.top));
+        let _ = SetWindowPos(
+            self.quick,
+            Some(HWND_TOPMOST),
+            x,
+            y,
+            width,
+            height,
+            SWP_NOACTIVATE,
+        );
+        self.layout();
+        self.refresh();
+        let _ = PostMessageW(Some(self.host), REDRAW, WPARAM(0), LPARAM(0));
+        SetTimer(Some(self.quick), 1, 10_000, None);
+        let _ = ShowWindow(self.quick, SW_SHOW);
+        let _ = SetForegroundWindow(self.quick);
+        let _ = SetFocus(Some(self.quick_list));
+        Ok(())
+    }
+
+    unsafe fn device_menu(&mut self) {
+        if self.selected().is_none() {
+            return;
+        }
+        let Ok(menu) = CreatePopupMenu() else {
+            return;
+        };
+        for (id, label) in [
+            (RETRY, "다시 연결(&R)"),
+            (STOP, "수신 중지(&S)"),
+            (ALIAS, "별명(&N)"),
+            (FORGET, "목록에서 제거(&D)"),
+        ] {
+            let _ = AppendMenuW(menu, MF_STRING, id, PCWSTR(wide(label).as_ptr()));
+        }
+        let mut point = POINT::default();
+        let _ = GetCursorPos(&mut point);
+        // A keyboard context menu belongs next to the focused list row.
+        if GetFocus() == self.list {
+            let mut rect = RECT::default();
+            let _ = GetWindowRect(self.list, &mut rect);
+            point = POINT {
+                x: rect.left + self.s(32),
+                y: rect.top + self.s(32),
+            };
+        }
+        let id = TrackPopupMenu(
+            menu,
+            TPM_RETURNCMD | TPM_RIGHTBUTTON,
+            point.x,
+            point.y,
+            Some(0),
+            self.main,
+            None,
+        )
+        .0 as usize;
+        let _ = DestroyMenu(menu);
+        self.command(self.main, id, 0);
+    }
+
+    unsafe fn draw_list(&self, draw: &mut NMLVCUSTOMDRAW) -> LRESULT {
+        if draw.nmcd.dwDrawStage == CDDS_PREPAINT {
+            return LRESULT(CDRF_NOTIFYITEMDRAW as isize);
+        }
+        if draw.nmcd.dwDrawStage != CDDS_ITEMPREPAINT {
+            return LRESULT(CDRF_DODEFAULT as isize);
+        }
+        let model = self.model.lock().unwrap();
+        let Some(peer) = model.peers.values().nth(draw.nmcd.dwItemSpec) else {
+            return LRESULT(0);
+        };
+        let native_state = send(
+            draw.nmcd.hdr.hwndFrom,
+            LVM_GETITEMSTATE,
+            WPARAM(draw.nmcd.dwItemSpec),
+            LPARAM((LVIS_SELECTED.0 | LVIS_FOCUSED.0) as isize),
+        )
+        .0 as u32;
+        let selected = native_state & LVIS_SELECTED.0 != 0;
+        let dc = draw.nmcd.hdc;
+        let mut row = RECT {
+            left: LVIR_BOUNDS as i32,
+            ..Default::default()
+        };
+        send(
+            draw.nmcd.hdr.hwndFrom,
+            LVM_GETITEMRECT,
+            WPARAM(draw.nmcd.dwItemSpec),
+            LPARAM(&mut row as *mut RECT as isize),
+        );
+        if row.right <= row.left || row.bottom <= row.top {
+            return LRESULT(CDRF_SKIPDEFAULT as isize);
+        }
+        let saved_dc = SaveDC(dc);
+        IntersectClipRect(dc, row.left, row.top, row.right, row.bottom);
+        row.left += self.s(2);
+        row.right -= self.s(2);
+        row.top += self.s(3);
+        row.bottom -= self.s(3);
+        let background = if selected {
+            self.theme.selected
+        } else {
+            self.theme.surface
+        };
+        theme::fill(dc, &row, background);
+        let foreground = if selected {
+            self.theme.on_selected
+        } else {
+            self.theme.text
+        };
+        let secondary = if selected && self.theme.contrast {
+            foreground
+        } else {
+            self.theme.secondary
+        };
+        let accent = if selected && self.theme.contrast {
+            foreground
+        } else {
+            self.theme.accent
+        };
+        let area = |x, y, w, h| RECT {
+            left: row.left + self.s(x),
+            top: row.top + self.s(y),
+            right: row.left + self.s(x + w),
+            bottom: row.top + self.s(y + h),
+        };
+        let width = (row.right - row.left) * 9600 / (self.dpi * self.text_scale) as i32;
+        theme::text(
+            dc,
+            self.name_font,
+            foreground,
+            peer.saved.label(),
+            area(16, 8, width - 32, 24),
+            DT_SINGLELINE | DT_END_ELLIPSIS,
+        );
+        theme::text(
+            dc,
+            self.battery_font,
+            accent,
+            &peer.battery_text(),
+            area(16, 34, 100, 32),
+            DT_SINGLELINE,
+        );
+        theme::text(
+            dc,
+            self.font,
+            foreground,
+            peer.charge_text(),
+            area(120, 42, width - 140, 23),
+            DT_SINGLELINE | DT_END_ELLIPSIS,
+        );
+        theme::text(
+            dc,
+            self.font,
+            foreground,
+            &peer.status_text(),
+            area(16, 72, width - 32, 22),
+            DT_SINGLELINE | DT_END_ELLIPSIS,
+        );
+        theme::text(
+            dc,
+            self.font,
+            secondary,
+            &format!("마지막 수신 · {}", peer.age_text()),
+            area(16, 96, width - 32, 22),
+            DT_SINGLELINE | DT_END_ELLIPSIS,
+        );
+        if selected || self.theme.contrast {
+            let pen = CreatePen(
+                PS_SOLID,
+                1,
+                if selected { accent } else { self.theme.border },
+            );
+            let old = SelectObject(dc, pen.into());
+            let brush = SelectObject(dc, GetStockObject(NULL_BRUSH));
+            let _ = Rectangle(dc, row.left, row.top, row.right, row.bottom);
+            SelectObject(dc, brush);
+            SelectObject(dc, old);
+            let _ = DeleteObject(pen.into());
+        }
+        if native_state & LVIS_FOCUSED.0 != 0 && GetFocus() == draw.nmcd.hdr.hwndFrom {
+            let mut focus = row;
+            let _ = InflateRect(&mut focus, -self.s(2), -self.s(2));
+            let _ = DrawFocusRect(dc, &focus);
+        }
+        let _ = RestoreDC(dc, saved_dc);
+        LRESULT(CDRF_SKIPDEFAULT as isize)
+    }
+
+    unsafe fn draw_button(&self, draw: &mut NMCUSTOMDRAW) -> LRESULT {
+        if draw.dwDrawStage != CDDS_PREPAINT {
+            return LRESULT(CDRF_DODEFAULT as isize);
+        }
+        let hwnd = draw.hdr.hwndFrom;
+        let id = GetDlgCtrlID(hwnd) as usize;
+        let primary = id == ADD || id == CONNECT || id == SAVE;
+        let disabled = !IsWindowEnabled(hwnd).as_bool();
+        let hot = (draw.uItemState & (CDIS_HOT | CDIS_SELECTED)).0 != 0;
+        let dc = draw.hdc;
+        let background = if primary && !disabled {
+            self.theme.accent
+        } else if hot {
+            self.theme.selected
+        } else {
+            self.theme.surface
+        };
+        let color = if disabled {
+            self.theme.secondary
+        } else if primary {
+            self.theme.on_accent
+        } else if hot && self.theme.contrast {
+            self.theme.on_selected
+        } else {
+            self.theme.text
+        };
+        let checkbox = [ALERTS, FULL, STARTUP].contains(&id);
+        let mut rect = draw.rc;
+        if checkbox {
+            theme::fill(dc, &rect, self.theme.background);
+            let box_rect = RECT {
+                right: rect.left + self.s(18),
+                bottom: rect.top + self.s(18),
+                ..rect
+            };
+            theme::fill(
+                dc,
+                &box_rect,
+                if checked(hwnd) {
+                    self.theme.accent
+                } else {
+                    self.theme.surface
+                },
+            );
+            let _ = FrameRect(dc, &box_rect, self.theme.surface_brush);
+            if checked(hwnd) {
+                // Draw a check with the same GDI stroke in every theme.
+                let pen = CreatePen(PS_SOLID, self.s(2), self.theme.on_accent);
+                let old = SelectObject(dc, pen.into());
+                let _ = MoveToEx(dc, rect.left + self.s(4), rect.top + self.s(9), None);
+                let _ = LineTo(dc, rect.left + self.s(8), rect.top + self.s(13));
+                let _ = LineTo(dc, rect.left + self.s(15), rect.top + self.s(5));
+                SelectObject(dc, old);
+                let _ = DeleteObject(pen.into());
+            } else {
+                let pen = CreatePen(PS_SOLID, 1, self.theme.secondary);
+                let old = SelectObject(dc, pen.into());
+                let brush = SelectObject(dc, GetStockObject(NULL_BRUSH));
+                let _ = Rectangle(
+                    dc,
+                    box_rect.left,
+                    box_rect.top,
+                    box_rect.right,
+                    box_rect.bottom,
+                );
+                SelectObject(dc, brush);
+                SelectObject(dc, old);
+                let _ = DeleteObject(pen.into());
+            }
+            rect.left += self.s(26);
+        } else {
+            theme::fill(dc, &rect, background);
+            if !primary || disabled {
+                let pen = CreatePen(PS_SOLID, 1, self.theme.border);
+                let old = SelectObject(dc, pen.into());
+                let brush = SelectObject(dc, GetStockObject(NULL_BRUSH));
+                let _ = Rectangle(dc, rect.left, rect.top, rect.right, rect.bottom);
+                SelectObject(dc, brush);
+                SelectObject(dc, old);
+                let _ = DeleteObject(pen.into());
+            }
+        }
+        // Let DrawText render the native mnemonic underline (including Alt navigation).
+        let mut label = wide(&control_text(hwnd));
+        label.pop();
+        let old = SelectObject(dc, self.font.into());
+        SetTextColor(dc, color);
+        SetBkMode(dc, TRANSPARENT);
+        DrawTextW(
+            dc,
+            &mut label,
+            &mut rect,
+            DT_SINGLELINE | DT_VCENTER | if checkbox { DT_LEFT } else { DT_CENTER },
+        );
+        SelectObject(dc, old);
+        if (draw.uItemState & CDIS_FOCUS).0 != 0 {
+            let mut focus = draw.rc;
+            let _ = InflateRect(&mut focus, -self.s(3), -self.s(3));
+            SetTextColor(dc, color);
+            let _ = DrawFocusRect(dc, &focus);
+        }
+        LRESULT(CDRF_SKIPDEFAULT as isize)
+    }
+
+    unsafe fn layout_dialog(&self) {
+        let Some(dialog) = &self.dialog else {
+            return;
+        };
+        let item = |id| GetDlgItem(Some(dialog.hwnd), id).unwrap_or_default();
+        let height = match dialog.kind {
+            Kind::Add => 450,
+            Kind::Settings => 300,
+            Kind::Alias(_) => 270,
+        };
+        self.fit_window(dialog.hwnd, 600, height);
+        match dialog.kind {
+            Kind::Add => {
+                self.place(item(300), 20, 18, 545, 52);
+                self.place(dialog.list, 20, 82, 545, 190);
+                self.place(item(SEARCH as i32), 20, 288, 122, 34);
+                self.place(item(BT_SETTINGS as i32), 150, 288, 162, 34);
+                self.place(item(CONNECT as i32), 320, 288, 245, 34);
+                self.place(item(301), 20, 335, 545, 65);
+            }
+            Kind::Alias(_) => {
+                self.place(item(300), 20, 20, 545, 50);
+                self.place(dialog.input, 20, 82, 545, 32);
+                self.place(item(SAVE as i32), 350, 172, 100, 34);
+                self.place(item(CANCEL as i32), 465, 172, 100, 34);
+            }
+            Kind::Settings => {
+                self.place(item(300), 20, 16, 545, 24);
+                self.place(item(ALERTS as i32), 20, 54, 205, 28);
+                self.place(dialog.input, 230, 54, 50, 28);
+                self.place(item(301), 288, 58, 277, 26);
+                self.place(item(FULL as i32), 20, 94, 400, 28);
+                self.place(item(STARTUP as i32), 20, 134, 510, 28);
+                self.place(item(SAVE as i32), 350, 202, 100, 34);
+                self.place(item(CANCEL as i32), 465, 202, 100, 34);
+            }
+        }
+    }
+
     fn s(&self, value: i32) -> i32 {
-        (value * self.dpi as i32 + 48) / 96
+        (value * self.dpi as i32 * self.text_scale as i32 + 4800) / 9600
     }
 
     unsafe fn control(
@@ -420,45 +1115,81 @@ impl App {
         );
     }
     unsafe fn update_font(&mut self) {
-        let previous = self.font;
-        self.font = CreateFontW(
-            -self.s(15),
-            0,
-            0,
-            0,
-            FW_NORMAL.0 as i32,
-            0,
-            0,
-            0,
-            DEFAULT_CHARSET,
-            OUT_DEFAULT_PRECIS,
-            CLIP_DEFAULT_PRECIS,
-            CLEARTYPE_QUALITY,
-            DEFAULT_PITCH.0 as u32,
-            w!("Segoe UI"),
-        );
-        if !self.main.is_invalid() {
-            let mut child = GetWindow(self.main, GW_CHILD).unwrap_or_default();
+        let old = [self.font, self.heading, self.name_font, self.battery_font];
+        let factor = (self.dpi * self.text_scale) as i32;
+        let make = |size: i32, weight| {
+            CreateFontW(
+                -(size * factor + 4800) / 9600,
+                0,
+                0,
+                0,
+                weight,
+                0,
+                0,
+                0,
+                DEFAULT_CHARSET,
+                OUT_DEFAULT_PRECIS,
+                CLIP_DEFAULT_PRECIS,
+                CLEARTYPE_QUALITY,
+                DEFAULT_PITCH.0 as u32,
+                w!("Segoe UI"),
+            )
+        };
+        self.font = make(14, FW_NORMAL.0 as i32);
+        self.heading = make(24, FW_SEMIBOLD.0 as i32);
+        self.name_font = make(16, FW_SEMIBOLD.0 as i32);
+        self.battery_font = make(23, FW_SEMIBOLD.0 as i32);
+        for parent in [
+            self.main,
+            self.quick,
+            self.dialog.as_ref().map(|d| d.hwnd).unwrap_or_default(),
+        ] {
+            if parent.is_invalid() {
+                continue;
+            }
+            let mut child = GetWindow(parent, GW_CHILD).unwrap_or_default();
             while !child.is_invalid() {
                 send(child, WM_SETFONT, WPARAM(self.font.0 as usize), LPARAM(1));
                 child = GetWindow(child, GW_HWNDNEXT).unwrap_or_default();
             }
+            if let Ok(title) = GetDlgItem(Some(parent), 300)
+                && parent == self.main
+            {
+                send(
+                    title,
+                    WM_SETFONT,
+                    WPARAM(self.heading.0 as usize),
+                    LPARAM(1),
+                );
+            }
         }
-        if !previous.is_invalid() {
-            let _ = DeleteObject(previous.into());
+        for font in old {
+            if !font.is_invalid() {
+                let _ = DeleteObject(font.into());
+            }
         }
     }
 
     unsafe fn show_main(&mut self) -> windows::core::Result<()> {
+        if !self.quick.is_invalid() {
+            let _ = ShowWindow(self.quick, SW_HIDE);
+            let _ = KillTimer(Some(self.quick), 1);
+        }
         if !self.main.is_invalid() {
             let _ = ShowWindow(self.main, SW_RESTORE);
             let _ = SetForegroundWindow(self.main);
+            SetTimer(Some(self.main), 1, 10_000, None);
+            self.refresh();
             return Ok(());
         }
         self.main = CreateWindowExW(
             WS_EX_CONTROLPARENT,
             CLASS,
-            w!("NearLink"),
+            if self.preview {
+                w!("NearLink · 미리 보기")
+            } else {
+                w!("NearLink")
+            },
             WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
             CW_USEDEFAULT,
             CW_USEDEFAULT,
@@ -493,60 +1224,35 @@ impl App {
             ("별명(&N)", ALIAS),
             ("목록에서 제거(&D)", FORGET),
             ("설정(&O)", SETTINGS),
+            ("기기 동작(&M)", ACTIONS),
         ] {
             self.button(self.main, text, id);
         }
-        self.list = self.control(
-            self.main,
-            WC_LISTVIEWW,
-            "",
-            WS_TABSTOP | WS_BORDER | WINDOW_STYLE(LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS),
-            LIST,
-        );
+        self.list = self.device_list(self.main);
+        self.control(self.main,w!("STATIC"),"연결한 기기가 없습니다.\r\nAndroid NearLink에서 연결 준비를 누른 뒤 기기를 추가하세요.",WINDOW_STYLE(SS_CENTER),305);
+        self.theme.window(self.main);
         send(
-            self.list,
-            LVM_SETEXTENDEDLISTVIEWSTYLE,
-            WPARAM(0),
-            LPARAM((LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER) as isize),
+            GetDlgItem(Some(self.main), 300)?,
+            WM_SETFONT,
+            WPARAM(self.heading.0 as usize),
+            LPARAM(1),
         );
-        for (index, text) in ["기기", "배터리", "충전 상태", "연결", "마지막 수신"]
-            .iter()
-            .enumerate()
-        {
-            let mut label = wide(text);
-            let column = LVCOLUMNW {
-                mask: LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM,
-                pszText: windows::core::PWSTR(label.as_mut_ptr()),
-                cx: self.s(140),
-                iSubItem: index as i32,
-                ..Default::default()
-            };
-            send(
-                self.list,
-                LVM_INSERTCOLUMNW,
-                WPARAM(index),
-                LPARAM(&column as *const _ as isize),
-            );
-        }
         self.info = self.control(self.main, w!("STATIC"), "", WINDOW_STYLE::default(), 303);
         self.control(
             self.main,
             w!("STATIC"),
-            "창을 닫아도 트레이에서 수신합니다. 종료하려면 트레이 메뉴를 사용하세요.",
+            if self.preview {
+                "미리 보기 · 예시 기기, BLE 수신 안 함"
+            } else {
+                "창을 닫아도 트레이에서 수신합니다."
+            },
             WINDOW_STYLE::default(),
             304,
         );
-        let _ = SetWindowPos(
-            self.main,
-            None,
-            0,
-            0,
-            self.s(960),
-            self.s(570),
-            SWP_NOMOVE | SWP_NOZORDER,
-        );
+        self.fit_window(self.main, 720, 760);
         self.layout();
         self.refresh();
+        let _ = PostMessageW(Some(self.host), REDRAW, WPARAM(0), LPARAM(0));
         SetTimer(Some(self.main), 1, 10_000, None);
         let _ = ShowWindow(self.main, SW_SHOW);
         let _ = SetForegroundWindow(self.main);
@@ -555,44 +1261,113 @@ impl App {
     }
 
     unsafe fn layout(&self) {
-        if self.main.is_invalid() {
-            return;
-        }
-        let mut bounds = RECT::default();
-        let _ = GetClientRect(self.main, &mut bounds);
-        let width = bounds.right * 96 / self.dpi as i32;
-        let height = bounds.bottom * 96 / self.dpi as i32;
-        let item = |id| GetDlgItem(Some(self.main), id).unwrap_or_default();
-        self.place(item(300), 24, 18, width - 48, 25);
-        self.place(item(301), 24, 48, width - 48, 24);
-        let mut x = 24;
-        for (id, size) in [
-            (ADD, 112),
-            (RETRY, 112),
-            (STOP, 112),
-            (ALIAS, 76),
-            (FORGET, 132),
+        for (hwnd, list, quick) in [
+            (self.main, self.list, false),
+            (self.quick, self.quick_list, true),
         ] {
-            self.place(item(id as i32), x, 86, size, 34);
-            x += size + 8;
-        }
-        self.place(item(SETTINGS as i32), width - 104, 86, 80, 34);
-        self.place(self.list, 24, 136, width - 48, (height - 254).max(120));
-        self.place(self.info, 24, height - 102, width - 48, 54);
-        self.place(item(304), 24, height - 35, width - 48, 24);
-        let columns = [
-            210,
-            86,
-            136,
-            144,
-            (width - 48 - 210 - 86 - 136 - 144 - 6).max(100),
-        ];
-        for (index, size) in columns.into_iter().enumerate() {
+            if hwnd.is_invalid() {
+                continue;
+            }
+            let mut bounds = RECT::default();
+            let _ = GetClientRect(hwnd, &mut bounds);
+            let width = bounds.right * 9600 / (self.dpi * self.text_scale) as i32;
+            let height = bounds.bottom * 9600 / (self.dpi * self.text_scale) as i32;
+            let item = |id| GetDlgItem(Some(hwnd), id).unwrap_or_default();
+            if quick {
+                self.place(item(300), 20, 14, width - 40, 24);
+                self.place(list, 12, 46, width - 24, (height - 108).max(80));
+                self.place(
+                    item(305),
+                    24,
+                    46 + (height - 108).max(80) / 2 - 36,
+                    width - 48,
+                    72,
+                );
+                self.place(item(ADD as i32), 16, height - 48, 110, 32);
+                self.place(item(OPEN_MAIN as i32), width - 164, height - 48, 148, 32);
+            } else {
+                let compact = height < 520;
+                let menu_actions = compact && height < 400;
+                for id in [301, 303, 304] {
+                    let _ = ShowWindow(item(id), if compact { SW_HIDE } else { SW_SHOW });
+                }
+                let _ = ShowWindow(
+                    item(ACTIONS as i32),
+                    if menu_actions { SW_SHOW } else { SW_HIDE },
+                );
+                for id in [RETRY, STOP, ALIAS, FORGET] {
+                    let _ = ShowWindow(
+                        item(id as i32),
+                        if menu_actions { SW_HIDE } else { SW_SHOW },
+                    );
+                }
+                if compact {
+                    self.place(item(300), 24, 12, width - 48, 34);
+                    self.place(item(ADD as i32), 24, 58, 120, 34);
+                    self.place(item(SETTINGS as i32), width - 112, 58, 88, 34);
+                    let extra = if !menu_actions && width < 610 { 42 } else { 0 };
+                    let list_height = (height - 166 - extra).max(64);
+                    self.place(list, 16, 106, width - 32, list_height);
+                    self.place(item(305), 24, 106 + list_height / 2 - 36, width - 48, 72);
+                    let mut x = 24;
+                    let mut y = height - 44 - extra;
+                    for (id, size) in [(RETRY, 110), (STOP, 110), (ALIAS, 80), (FORGET, 142)] {
+                        if x + size > width - 16 {
+                            x = 24;
+                            y += 42;
+                        }
+                        self.place(item(id as i32), x, y, size, 34);
+                        x += size + 8;
+                    }
+                    self.place(item(ACTIONS as i32), 24, height - 44, 142, 34);
+                    send(
+                        list,
+                        LVM_SETCOLUMNWIDTH,
+                        WPARAM(0),
+                        LPARAM(
+                            (self.s(width - 32) - GetSystemMetrics(SM_CXVSCROLL) - 4).max(1)
+                                as isize,
+                        ),
+                    );
+                    continue;
+                }
+                self.place(item(300), 24, 20, width - 48, 34);
+                self.place(item(301), 24, 62, width - 48, 24);
+                self.place(item(ADD as i32), 24, 100, 120, 34);
+                self.place(item(SETTINGS as i32), width - 112, 100, 88, 34);
+                let wrap = width < 610;
+                let extra = if wrap { 42 } else { 0 };
+                self.place(list, 16, 150, width - 32, (height - 316 - extra).max(64));
+                self.place(
+                    item(305),
+                    24,
+                    150 + (height - 316 - extra).max(64) / 2 - 36,
+                    width - 48,
+                    72,
+                );
+                self.place(self.info, 24, height - 156 - extra, width - 48, 52);
+                let mut x = 24;
+                let mut y = height - 94 - extra;
+                for (id, size) in [(RETRY, 110), (STOP, 110), (ALIAS, 80), (FORGET, 142)] {
+                    if x + size > width - 16 {
+                        x = 24;
+                        y += 42;
+                    }
+                    self.place(item(id as i32), x, y, size, 34);
+                    x += size + 8;
+                }
+                self.place(item(304), 24, height - 44, width - 48, 24);
+            }
             send(
-                self.list,
+                list,
                 LVM_SETCOLUMNWIDTH,
-                WPARAM(index),
-                LPARAM(self.s(size) as isize),
+                WPARAM(0),
+                LPARAM(
+                    (self.s(width - if quick { 24 } else { 32 })
+                        - GetSystemMetrics(SM_CXVSCROLL)
+                        - 4)
+                    .max(1) as isize,
+                ),
             );
         }
     }
@@ -619,7 +1394,7 @@ impl App {
         let peer = self
             .selected()
             .and_then(|address| model.peers.get(&address));
-        for id in [RETRY, STOP, ALIAS, FORGET] {
+        for id in [RETRY, STOP, ALIAS, FORGET, ACTIONS] {
             let enabled = peer.is_some_and(|p| id != STOP || p.state != State::Stopped);
             let _ = EnableWindow(
                 GetDlgItem(Some(self.main), id as i32).unwrap_or_default(),
@@ -627,11 +1402,13 @@ impl App {
             );
         }
         let detail = peer.map(|peer| {
-            if !peer.detail.is_empty() { peer.detail.clone() }
+            if peer.stale() { "15분 이상 갱신되지 않은 값입니다. 배터리가 변하지 않으면 수신 시각이 오래될 수 있습니다.".into() }
+            else if !peer.detail.is_empty() { peer.detail.clone() }
             else if peer.state != State::Connected && peer.updated.is_some() { "마지막으로 받은 잔량입니다. 현재 값과 다를 수 있습니다.".into() }
             else { "배터리 값이 바뀌면 자동으로 갱신합니다. 마지막 수신 시각은 배터리 데이터 수신 기준입니다.".into() }
         }).unwrap_or_else(|| if model.message.is_empty() { "기기를 선택하면 연결 상태를 확인할 수 있습니다.".into() } else { model.message.clone() });
         let _ = SetWindowTextW(self.info, PCWSTR(wide(&detail).as_ptr()));
+        let _ = PostMessageW(Some(self.host), REDRAW, WPARAM(0), LPARAM(0));
     }
 
     unsafe fn refresh(&mut self) {
@@ -645,72 +1422,96 @@ impl App {
             }
         };
         if let Some(settings) = learned
-            && let Err(error) = config::save(&self.directory, &settings)
+            && let Err(error) = self.persist(&settings)
         {
             self.model.lock().unwrap().message = error;
         }
         self.update_tooltip();
-        if !self.main.is_invalid() {
-            let selected = self.selected();
-            // Disable notifications while replacing rows to avoid borrowing state reentrantly.
-            SetWindowLongPtrW(self.main, GWLP_USERDATA, 0);
-            send(self.list, WM_SETREDRAW, WPARAM(0), LPARAM(0));
-            send(self.list, LVM_DELETEALLITEMS, WPARAM(0), LPARAM(0));
-            self.rows.clear();
+        for (parent, list) in [(self.main, self.list), (self.quick, self.quick_list)] {
+            if parent.is_invalid() {
+                continue;
+            }
+            let selected = send(
+                list,
+                LVM_GETNEXTITEM,
+                WPARAM(usize::MAX),
+                LPARAM(LVNI_SELECTED as isize),
+            )
+            .0;
+            let address = if selected >= 0 {
+                self.rows.get(selected as usize).copied()
+            } else {
+                None
+            };
+            let top = send(list, LVM_GETTOPINDEX, WPARAM(0), LPARAM(0)).0;
+            SetWindowLongPtrW(parent, GWLP_USERDATA, 0);
+            send(list, WM_SETREDRAW, WPARAM(0), LPARAM(0));
             let model = self.model.lock().unwrap();
-            for (row, (address, peer)) in model.peers.iter().enumerate() {
-                self.rows.push(*address);
-                let texts = [
-                    peer.saved.label().to_string(),
-                    peer.battery_text(),
-                    peer.charge_text().into(),
-                    peer.state.text().into(),
-                    peer.age_text(),
-                ];
-                for (column, text) in texts.iter().enumerate() {
-                    let mut text = wide(text);
-                    let item = LVITEMW {
-                        mask: LVIF_TEXT,
-                        iItem: row as i32,
-                        iSubItem: column as i32,
-                        pszText: windows::core::PWSTR(text.as_mut_ptr()),
-                        ..Default::default()
-                    };
-                    send(
-                        self.list,
-                        if column == 0 {
-                            LVM_INSERTITEMW
-                        } else {
-                            LVM_SETITEMTEXTW
-                        },
-                        WPARAM(if column == 0 { 0 } else { row }),
-                        LPARAM(&item as *const _ as isize),
-                    );
-                }
-                if selected == Some(*address) {
+            let next: Vec<_> = model.peers.keys().copied().collect();
+            let _ = ShowWindow(list, if next.is_empty() { SW_HIDE } else { SW_SHOW });
+            if let Ok(empty) = GetDlgItem(Some(parent), 305) {
+                let _ = ShowWindow(empty, if next.is_empty() { SW_SHOW } else { SW_HIDE });
+            }
+            if send(list, LVM_GETITEMCOUNT, WPARAM(0), LPARAM(0)).0 as usize != next.len()
+                || self.rows != next
+            {
+                send(list, LVM_DELETEALLITEMS, WPARAM(0), LPARAM(0));
+            }
+            let count = send(list, LVM_GETITEMCOUNT, WPARAM(0), LPARAM(0)).0 as usize;
+            for (row, peer) in model.peers.values().enumerate() {
+                let mut label = wide(&peer.accessible_text());
+                let item = LVITEMW {
+                    mask: LVIF_TEXT,
+                    iItem: row as i32,
+                    pszText: windows::core::PWSTR(label.as_mut_ptr()),
+                    ..Default::default()
+                };
+                send(
+                    list,
+                    if row >= count {
+                        LVM_INSERTITEMW
+                    } else {
+                        LVM_SETITEMTEXTW
+                    },
+                    WPARAM(if row >= count { 0 } else { row }),
+                    LPARAM(&item as *const _ as isize),
+                );
+                if address == Some(peer.saved.address) {
                     let item = LVITEMW {
                         stateMask: LIST_VIEW_ITEM_STATE_FLAGS(LVIS_SELECTED.0 | LVIS_FOCUSED.0),
                         state: LIST_VIEW_ITEM_STATE_FLAGS(LVIS_SELECTED.0 | LVIS_FOCUSED.0),
                         ..Default::default()
                     };
                     send(
-                        self.list,
+                        list,
                         LVM_SETITEMSTATE,
                         WPARAM(row),
                         LPARAM(&item as *const _ as isize),
                     );
                 }
             }
+            // Keep the same top row while refreshing the accessible strings.
+            if top >= 0 && (top as usize) < next.len() {
+                send(list, LVM_ENSUREVISIBLE, WPARAM(top as usize), LPARAM(0));
+            }
             drop(model);
-            send(self.list, WM_SETREDRAW, WPARAM(1), LPARAM(0));
-            let _ = InvalidateRect(Some(self.list), None, true);
-            SetWindowLongPtrW(self.main, GWLP_USERDATA, self.callback as isize);
+            send(list, WM_SETREDRAW, WPARAM(1), LPARAM(0));
+            let _ = InvalidateRect(Some(list), None, false);
+            SetWindowLongPtrW(parent, GWLP_USERDATA, self.callback as isize);
+        }
+        self.rows = self.model.lock().unwrap().peers.keys().copied().collect();
+        if !self.main.is_invalid() {
             self.selection();
         }
         self.refresh_dialog();
     }
 
     unsafe fn command(&mut self, hwnd: HWND, id: usize, notification: u16) {
+        if hwnd == self.quick && id == 2 {
+            let _ = ShowWindow(hwnd, SW_HIDE);
+            let _ = KillTimer(Some(hwnd), 1);
+            return;
+        }
         if self
             .dialog
             .as_ref()
@@ -718,7 +1519,11 @@ impl App {
         {
             match id {
                 CANCEL | 2 => self.close_dialog(),
-                SEARCH => self.engine.scan(),
+                SEARCH => {
+                    if !self.preview {
+                        self.engine.scan();
+                    }
+                }
                 BT_SETTINGS => {
                     ShellExecuteW(
                         Some(hwnd),
@@ -739,8 +1544,20 @@ impl App {
             return;
         }
         match id {
-            ADD => self.open_dialog(Kind::Add),
-            SETTINGS => self.open_dialog(Kind::Settings),
+            ADD => {
+                let _ = self.show_main();
+                self.open_dialog(Kind::Add);
+            }
+            SETTINGS => {
+                let _ = self.show_main();
+                self.open_dialog(Kind::Settings);
+            }
+            OPEN_MAIN => {
+                let _ = self.show_main();
+                self.open_dialog(Kind::Settings);
+            }
+            QUIT => PostQuitMessage(0),
+            ACTIONS => self.device_menu(),
             RETRY => self.set_enabled(true),
             STOP => self.set_enabled(false),
             ALIAS => {
@@ -767,6 +1584,9 @@ impl App {
         if let Some(dialog) = &self.dialog {
             let _ = SetForegroundWindow(dialog.hwnd);
             return;
+        }
+        if self.font.is_invalid() {
+            self.update_font();
         }
         let title = match kind {
             Kind::Add => "기기 추가",
@@ -915,6 +1735,9 @@ impl App {
             list,
             input,
         });
+        self.layout_dialog();
+        self.theme.window(hwnd);
+        let _ = EnableWindow(self.main, false);
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, self.callback as isize);
         let _ = ShowWindow(hwnd, SW_SHOW);
         let _ = SetForegroundWindow(hwnd);
@@ -923,10 +1746,11 @@ impl App {
         } else if !list.is_invalid() {
             let _ = SetFocus(Some(list));
         }
-        if scan {
+        if scan && !self.preview {
             self.engine.scan();
         }
         self.refresh_dialog();
+        let _ = PostMessageW(Some(self.host), REDRAW, WPARAM(0), LPARAM(0));
     }
 
     unsafe fn refresh_dialog(&self) {
@@ -1026,7 +1850,7 @@ impl App {
         {
             peer.enabled = true;
         }
-        if let Err(error) = config::save(&self.directory, &settings) {
+        if let Err(error) = self.persist(&settings) {
             fatal(&error);
             return;
         }
@@ -1085,7 +1909,8 @@ impl App {
                 settings.low_threshold = threshold;
                 let startup =
                     checked(GetDlgItem(Some(dialog.hwnd), STARTUP as i32).unwrap_or_default());
-                if startup != startup_enabled()
+                if !self.preview
+                    && startup != startup_enabled()
                     && let Err(error) = set_startup(startup)
                 {
                     fatal(&error);
@@ -1094,7 +1919,7 @@ impl App {
             }
             Kind::Add => return,
         }
-        if let Err(error) = config::save(&self.directory, &settings) {
+        if let Err(error) = self.persist(&settings) {
             fatal(&error);
             return;
         }
@@ -1135,7 +1960,7 @@ impl App {
             return;
         }
         settings.peers.retain(|peer| peer.address != address);
-        if let Err(error) = config::save(&self.directory, &settings) {
+        if let Err(error) = self.persist(&settings) {
             fatal(&error);
             return;
         }
@@ -1156,7 +1981,7 @@ impl App {
         if let Some(peer) = settings.peers.iter_mut().find(|p| p.address == address) {
             peer.enabled = enabled;
         }
-        if let Err(error) = config::save(&self.directory, &settings) {
+        if let Err(error) = self.persist(&settings) {
             fatal(&error);
             return;
         }
@@ -1167,7 +1992,15 @@ impl App {
                 peer.saved.enabled = enabled;
             }
         }
-        if enabled {
+        if self.preview {
+            if let Some(peer) = self.model.lock().unwrap().peers.get_mut(&address) {
+                peer.state = if enabled {
+                    State::Retrying
+                } else {
+                    State::Stopped
+                };
+            }
+        } else if enabled {
             self.engine.start(address, true);
         } else {
             self.engine.stop(address);
@@ -1210,7 +2043,7 @@ impl App {
                     "{} {} · {}",
                     peer.saved.label(),
                     peer.battery_text(),
-                    peer.state.text()
+                    peer.status_text()
                 )
             })
             .collect();
@@ -1260,7 +2093,7 @@ impl App {
                 peer.saved.label().replace('&', "&&"),
                 peer.battery_text(),
                 peer.charge_text(),
-                peer.state.text()
+                peer.status_text()
             );
             let _ = AppendMenuW(menu, MF_STRING, 20 + index, PCWSTR(wide(&label).as_ptr()));
         }
@@ -1268,6 +2101,7 @@ impl App {
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
         let _ = AppendMenuW(menu, MF_STRING, 1, w!("기기 배터리 열기(&O)"));
         let _ = AppendMenuW(menu, MF_STRING, 2, w!("기기 추가(&A)"));
+        let _ = AppendMenuW(menu, MF_STRING, 4, w!("설정(&O)"));
         let _ = AppendMenuW(menu, MF_STRING, 3, w!("종료(&X)"));
         let mut point = POINT::default();
         let _ = GetCursorPos(&mut point);
@@ -1295,8 +2129,54 @@ impl App {
             3 => {
                 PostQuitMessage(0);
             }
+            4 => {
+                let _ = self.show_main();
+                self.open_dialog(Kind::Settings);
+            }
             _ => {}
         }
+    }
+}
+
+/// Explicit, isolated, non-persistent fixtures for visual QA. Never start BLE or
+/// raise notifications in this mode; every visible surface labels the preview.
+fn preview_model(model: &mut Model) {
+    use std::time::{Duration, SystemTime};
+    model.peers.clear();
+    model.settings.peers.clear();
+    if std::env::args().any(|a| a == "--preview-empty") {
+        return;
+    }
+    for (address, name, level, charging, state, seconds) in [
+        (1, "Galaxy S25", Some(73), Some(true), State::Connected, 24),
+        (
+            2,
+            "Galaxy Tab S10",
+            Some(42),
+            Some(false),
+            State::Connected,
+            1860,
+        ),
+        (
+            3,
+            "업무용 휴대폰",
+            Some(18),
+            Some(false),
+            State::Retrying,
+            420,
+        ),
+        (4, "아직 수신하지 않은 기기", None, None, State::Stopped, 0),
+    ] {
+        let mut saved = SavedPeer::new(address, name.into(), false);
+        saved.enabled = state != State::Stopped;
+        model.settings.peers.push(saved.clone());
+        let mut peer = Peer::new(saved);
+        peer.state = state;
+        peer.level = level;
+        peer.charging = charging;
+        peer.plugged = charging;
+        peer.updated = level.map(|_| SystemTime::now() - Duration::from_secs(seconds));
+        model.peers.insert(address, peer);
     }
 }
 

@@ -4,6 +4,7 @@ mod ble;
 mod config;
 mod model;
 mod protocol;
+mod theme;
 mod ui;
 
 fn main() {
