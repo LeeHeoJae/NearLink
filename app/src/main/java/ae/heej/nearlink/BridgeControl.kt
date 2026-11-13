@@ -2,7 +2,7 @@ package ae.heej.nearlink
 
 /** Control requests are accepted only on an encrypted, bonded link. */
 internal object BridgeControl {
-    enum class Command { JOIN, STOP, RECOVER, REJECT }
+    enum class Command { JOIN, JOIN_RECEIVER, STOP, RECOVER, REJECT }
 
     fun accept(value: ByteArray, authenticated: Boolean, currentPeer: Boolean, prepared: Boolean): Command {
         if (!authenticated || value.size != 1) return Command.REJECT
@@ -11,6 +11,7 @@ internal object BridgeControl {
             2 -> if (currentPeer) Command.STOP else Command.REJECT
             3 -> if (currentPeer) Command.RECOVER else Command.REJECT
             4 -> if (currentPeer) Command.STOP else Command.REJECT
+            5 -> if (currentPeer || prepared) Command.JOIN_RECEIVER else Command.REJECT
             else -> Command.REJECT
         }
     }

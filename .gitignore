@@ -29,3 +29,7 @@ local.properties
 # Operating system files
 .DS_Store
 Thumbs.db
+
+# Local Rust toolchain and Windows build output
+/.tools/
+/windows/target/

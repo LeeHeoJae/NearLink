@@ -57,6 +57,11 @@ class ReceiverService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val address = intent?.getStringExtra("address")?.uppercase(java.util.Locale.ROOT)
         when (intent?.action) {
+            ACTION_SEND_ONLY -> address?.let { target ->
+                if (!BridgeSession.sendsOnlyTo(this, target)) return@let
+                connections.remove(target)?.close()
+                if (connections.isEmpty()) stopSelf()
+            }
             ACTION_STOP_PEER -> {
                 if (address == null) connections.values.toList().forEach { it.requestPeerStop() }
                 else if (!BridgeSession.contains(this, address)) connections[address]?.requestPeerStop() ?: run {
@@ -73,9 +78,9 @@ class ReceiverService : Service() {
             }
             ACTION_RECOVERY_PAUSE -> address?.let { connections[it]?.pauseForRecoveryDelayed() }
             else -> {
-                val targets = if (address != null) setOf(address) else BridgeSession.savedPeers(this)
+                val targets = if (address != null) setOf(address) else BridgeSession.receivingPeers(this)
                 targets.forEach { target ->
-                    if (BridgeSession.contains(this, target)) {
+                    if (BridgeSession.contains(this, target) && !BridgeSession.sendsOnlyTo(this, target)) {
                         connections[target]?.takeIf { it.isStopping() }?.let { old ->
                             connections.remove(target)
                             old.close()
@@ -665,6 +670,7 @@ class ReceiverService : Service() {
     }
 
     companion object {
+        const val ACTION_SEND_ONLY = "ae.heej.nearlink.SEND_ONLY"
         const val ACTION_STOP_PEER = "ae.heej.nearlink.STOP_PEER"
         const val ACTION_REMOVE_LOCAL = "ae.heej.nearlink.REMOVE_LOCAL"
         const val ACTION_RECOVERY_PAUSE = "ae.heej.nearlink.RECOVERY_PAUSE"

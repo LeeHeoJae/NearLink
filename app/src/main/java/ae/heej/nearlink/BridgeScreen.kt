@@ -56,7 +56,7 @@ internal fun BridgeScreen(status: BridgeSnapshot, message: String?, messageIsErr
                                 modifier = Modifier.weight(1f).heightIn(min = 48.dp)) { Text("연결 준비") }
                         }
                         Spacer(Modifier.height(BridgeDesign.gap))
-                        SectionTitle("다른 기기 배터리")
+                        SectionTitle("연결한 기기")
                         status.peers.values.sortedBy { it.peerName }.forEach { peer ->
                             PeerItem(peer, { onReconnect(peer.peerId) }, { onStopPeer(peer.peerId) })
                             Spacer(Modifier.height(BridgeDesign.gap))
@@ -177,7 +177,8 @@ private fun PeerItem(peer: PeerSnapshot, onReconnect: () -> Unit, onStop: () -> 
         Column(Modifier.padding(BridgeDesign.groupInset), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text(peer.peerName, style = MaterialTheme.typography.titleLarge)
             StatusText(receiveText(peer.receiveState), peer.receiveState == ReceiveState.ERROR)
-            peer.lastReading?.let { reading ->
+            if (peer.sendOnly) SecondaryText("이 기기로 배터리를 보내요. PC 배터리는 받지 않습니다.")
+            else peer.lastReading?.let { reading ->
                 Text("${reading.level}%", style = MaterialTheme.typography.displayMedium)
                 Text(when {
                     reading.charging == true -> "충전 중"
@@ -209,6 +210,7 @@ private fun receiveText(state: ReceiveState): String = when (state) {
     ReceiveState.RETRYING -> "연결을 다시 시도하고 있어요"
     ReceiveState.WAITING_FOR_BLUETOOTH -> "블루투스를 켜면 다시 연결해요"
     ReceiveState.ERROR -> "연결 오류"
+    ReceiveState.SEND_ONLY -> "배터리 보내기 켜짐 · 송신 전용"
 }
 
 @Composable

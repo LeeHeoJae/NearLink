@@ -98,4 +98,13 @@ class BridgeStatusTest {
         BridgeStatus.receivePeer("isolation-b", ReceiveState.STOPPED)
         assertEquals(ReceiveState.CONNECTED, BridgeStatus.state.value.peers["isolation-a"]?.receiveState)
     }
+
+    @Test fun registeredSendOnlyPeerDoesNotNeedAReverseBatteryReading() {
+        val peer = PeerSnapshot("pc", "Windows PC", receiveState = ReceiveState.SEND_ONLY, sendOnly = true)
+        val snapshot = BridgeSnapshot(peers = mapOf("pc" to peer))
+        assertTrue(snapshot.hasCompletedSetup())
+        assertNull(snapshot.peers["pc"]?.lastReading)
+        assertTrue(snapshot.copy(peers = mapOf("pc" to peer.copy(receiveState = ReceiveState.STOPPED))).hasCompletedSetup())
+        assertFalse(BridgeSnapshot(peers = mapOf("pc" to PeerSnapshot("pc"))).hasCompletedSetup())
+    }
 }

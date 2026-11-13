@@ -24,6 +24,12 @@ object BridgeSession {
     fun savedPeer(context: Context): String? = savedPeers(context).firstOrNull()
     fun contains(context: Context, address: String): Boolean = savedPeers(context).any { it.equals(address, true) }
 
+    /** Windows receives this device's battery without advertising a battery of its own. */
+    fun sendsOnlyTo(context: Context, address: String): Boolean =
+        prefs(context).getBoolean("${address.uppercase(java.util.Locale.ROOT)}.send_only", false)
+
+    fun receivingPeers(context: Context): Set<String> = savedPeers(context).filterNot { sendsOnlyTo(context, it) }.toSet()
+
     @Synchronized fun removePeer(context: Context, address: String) {
         val remaining = savedPeers(context).filterNot { it.equals(address, true) }.toSet()
         prefs(context).edit().putStringSet("peers_v2", remaining).commit()
@@ -34,14 +40,26 @@ object BridgeSession {
             Manifest.permission.BLUETOOTH_ADVERTISE).all { context.checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED }
     } else context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
 
-    @Synchronized fun start(context: Context, address: String) {
+    @Synchronized fun start(context: Context, address: String, receiveBattery: Boolean = !sendsOnlyTo(context, address)) {
         val normalized = address.uppercase(java.util.Locale.ROOT)
+        val wasReceiving = contains(context, normalized) && !sendsOnlyTo(context, normalized)
         context.getSharedPreferences("bridge_peer_readings", Context.MODE_PRIVATE).edit()
             .remove("$normalized.stop_unconfirmed").apply()
         prefs(context).edit().putStringSet("peers_v2", savedPeers(context) + normalized)
-            .putString("address", normalized).putBoolean("enabled", true).remove("stop_notice").commit()
+            .putString("address", normalized).putBoolean("enabled", true)
+            .putBoolean("$normalized.send_only", !receiveBattery).remove("stop_notice").commit()
         context.startForegroundService(Intent(context, BatteryService::class.java))
-        context.startForegroundService(Intent(context, ReceiverService::class.java).putExtra("address", address))
+        if (receiveBattery) {
+            context.startForegroundService(Intent(context, ReceiverService::class.java).putExtra("address", address))
+        } else if (wasReceiving) {
+            context.startForegroundService(Intent(context, ReceiverService::class.java)
+                .setAction(ReceiverService.ACTION_SEND_ONLY).putExtra("address", address))
+        }
+        if (!receiveBattery) {
+            val name = context.getSharedPreferences("bridge_peer_readings", Context.MODE_PRIVATE)
+                .getString("$normalized.name", null) ?: "Windows PC"
+            BridgeStatus.sendOnly(context, normalized, name)
+        }
     }
 
     fun disable(context: Context) {
@@ -52,12 +70,17 @@ object BridgeSession {
         val targets = if (address == null) savedPeers(context) else setOf(address)
         if (targets.isEmpty()) { stop(context); return }
         // Commit local intent first so process death cannot silently restore a stopped peer.
+        val receiverTargets = targets.filterNot { sendsOnlyTo(context, it) }
         targets.forEach { target ->
             removePeer(context, target)
             BridgeStatus.peerStopped(context, target, confirmed = false)
         }
+        if (receiverTargets.isEmpty()) {
+            if (savedPeers(context).isEmpty()) stop(context)
+            return
+        }
         try {
-            targets.forEach { target ->
+            receiverTargets.forEach { target ->
                 context.startForegroundService(Intent(context, ReceiverService::class.java)
                     .setAction(ReceiverService.ACTION_STOP_PEER).putExtra("address", target))
             }

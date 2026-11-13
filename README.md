@@ -2,6 +2,10 @@
 
 여러 Android 기기의 배터리 잔량과 충전 상태를 Bluetooth Low Energy(BLE)로 주고받아 삼성 기본 배터리 위젯에 표시하는 실험용 앱입니다. 별도의 위젯은 만들지 않습니다.
 
+Windows에서는 [Rust + Win32 트레이 앱](windows/README.md)으로 Android 기기의 배터리를 받을 수 있습니다.
+Windows용 첫 버전은 수신 전용이며, 현재 저장소의 Android 빌드가 필요합니다. 삼성 위젯의
+이름 표시와 별개로 Windows 목록에서는 기기 이름·별명을 표시합니다. 실제 BLE 연동은 실기기 검증이 필요합니다.
+
 <p align="center">
   <img src="docs/screenshots/samsung-battery-widget-cropped.svg" width="720" alt="삼성 기본 배터리 위젯에 두 기기의 배터리 잔량이 표시된 모습">
   <br>

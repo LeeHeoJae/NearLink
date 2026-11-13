@@ -334,9 +334,13 @@ class BatteryService : Service() {
                     val current = BridgeSession.contains(this@BatteryService, device.address)
                     val command = BridgeControl.accept(value, valid, current,
                         android.os.SystemClock.elapsedRealtime() < readyUntil)
-                    if (command == BridgeControl.Command.JOIN) {
+                    if (command == BridgeControl.Command.JOIN || command == BridgeControl.Command.JOIN_RECEIVER) {
                         try {
-                            if (!current) BridgeSession.start(this@BatteryService, device.address)
+                            val receiveBattery = command == BridgeControl.Command.JOIN
+                            if (!current || BridgeSession.sendsOnlyTo(this@BatteryService, device.address) == receiveBattery) {
+                                BridgeSession.start(this@BatteryService, device.address, receiveBattery)
+                            }
+                            if (!receiveBattery) BridgeStatus.sendOnly(this@BatteryService, device.address, device.name ?: "Windows PC")
                             readyUntil = 0L
                             renewLease()
                             server?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, 0, null)

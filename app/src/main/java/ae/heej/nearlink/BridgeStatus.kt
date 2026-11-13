@@ -7,7 +7,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 
 enum class SendState { STOPPED, STARTING, ADVERTISING, WAITING_FOR_BLUETOOTH, ERROR }
-enum class ReceiveState { STOPPED, SEARCHING, CONNECTING, READING, CONNECTED, RETRYING, WAITING_FOR_BLUETOOTH, ERROR }
+enum class ReceiveState { STOPPED, SEARCHING, CONNECTING, READING, CONNECTED, RETRYING, WAITING_FOR_BLUETOOTH, ERROR, SEND_ONLY }
 
 data class LastReading(val peerId: String, val peerName: String, val level: Int, val timeMillis: Long, val charging: Boolean? = null, val plugged: Boolean? = null)
 data class PeerSnapshot(
@@ -16,6 +16,7 @@ data class PeerSnapshot(
     val receiveState: ReceiveState = ReceiveState.STOPPED,
     val detail: String? = null,
     val lastReading: LastReading? = null,
+    val sendOnly: Boolean = false,
 )
 data class StatusEvent(val timeMillis: Long, val description: String)
 data class BridgeSnapshot(
@@ -48,8 +49,8 @@ internal fun BridgeSnapshot.withPeerReading(reading: LastReading, connected: Boo
         receiveState = if (connected) ReceiveState.CONNECTED else peer.receiveState)))
 }
 
-/** Pairing/advertising alone is not onboarding completion; a valid battery read is. */
-internal fun BridgeSnapshot.hasCompletedSetup(): Boolean = visibleReading() != null || peers.values.any { it.lastReading != null }
+/** Receiving needs a battery read; an explicitly registered send-only peer needs no reverse read. */
+internal fun BridgeSnapshot.hasCompletedSetup(): Boolean = visibleReading() != null || peers.values.any { it.lastReading != null || it.sendOnly }
 
 /** Services and the activity run in the same process; only the historical reading is persisted. */
 object BridgeStatus {
@@ -88,7 +89,11 @@ object BridgeStatus {
                     if (histories.contains("$address.plugged")) histories.getBoolean("$address.plugged", false) else null)
                 else old
             mutable.update { it.copy(peers = it.peers + (address to PeerSnapshot(address, reading?.peerName ?: "선택한 기기", lastReading = reading,
-                detail = if (histories.getBoolean("$address.stop_unconfirmed", false)) BridgeSession.STOP_UNCONFIRMED else null))) }
+                detail = if (histories.getBoolean("$address.stop_unconfirmed", false)) BridgeSession.STOP_UNCONFIRMED else null,
+                sendOnly = BridgeSession.sendsOnlyTo(context, address)))) }
+            if (BridgeSession.contains(context, address) && BridgeSession.sendsOnlyTo(context, address)) {
+                sendOnly(context, address, histories.getString("$address.name", null) ?: "Windows PC")
+            }
         }
         BridgeSession.stopNotice(context)?.let { notice -> mutable.update { it.copy(sendDetail = notice) } }
         initialized = true
@@ -114,7 +119,7 @@ object BridgeStatus {
 
     @Synchronized fun selectPeer(peerId: String, peerName: String) {
         mutable.update { snapshot ->
-            val peer = (snapshot.peers[peerId] ?: PeerSnapshot(peerId)).copy(peerName = peerName)
+            val peer = (snapshot.peers[peerId] ?: PeerSnapshot(peerId)).copy(peerName = peerName, sendOnly = false)
             snapshot.copy(peerId = peerId, peerName = peerName, peers = snapshot.peers + (peerId to peer))
         }
     }
@@ -122,6 +127,18 @@ object BridgeStatus {
     fun receivePeer(peerId: String, state: ReceiveState, detail: String? = null) {
         mutable.update { snapshot ->
             val peer = (snapshot.peers[peerId] ?: PeerSnapshot(peerId)).copy(receiveState = state, detail = detail)
+            snapshot.copy(peers = snapshot.peers + (peerId to peer))
+        }
+    }
+
+    fun sendOnly(context: Context, peerId: String, peerName: String) {
+        val histories = context.applicationContext.getSharedPreferences("bridge_peer_readings", Context.MODE_PRIVATE)
+        if (histories.getString("$peerId.name", null) != peerName) {
+            histories.edit().putString("$peerId.name", peerName).apply()
+        }
+        mutable.update { snapshot ->
+            val peer = (snapshot.peers[peerId] ?: PeerSnapshot(peerId)).copy(peerName = peerName,
+                receiveState = ReceiveState.SEND_ONLY, sendOnly = true, lastReading = null, detail = null)
             snapshot.copy(peers = snapshot.peers + (peerId to peer))
         }
     }
@@ -146,6 +163,7 @@ object BridgeStatus {
                 ReceiveState.RETRYING -> "재시도 대기"
                 ReceiveState.WAITING_FOR_BLUETOOTH -> "블루투스 대기"
                 ReceiveState.ERROR -> "오류"
+                ReceiveState.SEND_ONLY -> "송신 전용"
             })
         }
     }

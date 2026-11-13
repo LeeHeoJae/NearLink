@@ -5,7 +5,7 @@ import org.junit.Test
 
 class BridgeControlTest {
     @Test fun controlRequestsRequireAuthenticatedBond() {
-        for (command in 1..3) {
+        for (command in 1..5) {
             assertEquals(BridgeControl.Command.REJECT, BridgeControl.accept(byteArrayOf(command.toByte()), false, true, true))
         }
     }
@@ -21,7 +21,7 @@ class BridgeControlTest {
         assertEquals(BridgeControl.Command.REJECT, BridgeControl.accept(byteArrayOf(2), true, false, true))
         assertEquals(BridgeControl.Command.REJECT, BridgeControl.accept(byteArrayOf(), true, true, true))
         assertEquals(BridgeControl.Command.REJECT, BridgeControl.accept(byteArrayOf(2, 1), true, true, true))
-        assertEquals(BridgeControl.Command.REJECT, BridgeControl.accept(byteArrayOf(5), true, true, true))
+        assertEquals(BridgeControl.Command.REJECT, BridgeControl.accept(byteArrayOf(6), true, true, true))
     }
 
     @Test fun peerScopedStopRequiresAuthenticatedCurrentPeer() {
@@ -34,5 +34,13 @@ class BridgeControlTest {
         assertEquals(BridgeControl.Command.RECOVER, BridgeControl.accept(byteArrayOf(3), true, true, false))
         assertEquals(BridgeControl.Command.REJECT, BridgeControl.accept(byteArrayOf(3), true, false, true))
         assertEquals(BridgeControl.Command.REJECT, BridgeControl.accept(byteArrayOf(3), false, true, false))
+    }
+
+    @Test fun receiverOnlyJoinRequiresPreparationOrAnExistingAuthenticatedPeer() {
+        assertEquals(BridgeControl.Command.JOIN_RECEIVER, BridgeControl.accept(byteArrayOf(5), true, false, true))
+        assertEquals(BridgeControl.Command.JOIN_RECEIVER, BridgeControl.accept(byteArrayOf(5), true, true, false))
+        assertEquals(BridgeControl.Command.REJECT, BridgeControl.accept(byteArrayOf(5), true, false, false))
+        assertEquals(BridgeControl.Command.REJECT, BridgeControl.accept(byteArrayOf(5), false, true, true))
+        assertEquals(BridgeControl.Command.REJECT, BridgeControl.accept(byteArrayOf(5, 0), true, true, true))
     }
 }
