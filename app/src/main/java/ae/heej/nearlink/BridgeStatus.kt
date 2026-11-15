@@ -7,6 +7,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 
 enum class SendState { STOPPED, STARTING, ADVERTISING, WAITING_FOR_BLUETOOTH, ERROR }
+enum class PreparationState { IDLE, OPEN, ACCEPTED, EXPIRED }
 enum class ReceiveState { STOPPED, SEARCHING, CONNECTING, READING, CONNECTED, RETRYING, WAITING_FOR_BLUETOOTH, ERROR, SEND_ONLY }
 
 data class LastReading(val peerId: String, val peerName: String, val level: Int, val timeMillis: Long, val charging: Boolean? = null, val plugged: Boolean? = null)
@@ -29,7 +30,13 @@ data class BridgeSnapshot(
     val lastReading: LastReading? = null,
     val events: List<StatusEvent> = emptyList(),
     val peers: Map<String, PeerSnapshot> = emptyMap(),
+    val preparationState: PreparationState = PreparationState.IDLE,
+    val preparationUntil: Long = 0L,
 )
+
+/** Uses the service's monotonic deadline, including time spent outside the activity. */
+internal fun BridgeSnapshot.preparationSecondsRemaining(now: Long): Long =
+    if (preparationState == PreparationState.OPEN) ((preparationUntil - now).coerceAtLeast(0L) + 999L) / 1000L else 0L
 
 private fun BridgeSnapshot.withEvent(description: String): BridgeSnapshot =
     copy(events = (events + StatusEvent(System.currentTimeMillis(), description)).takeLast(8))
@@ -115,6 +122,10 @@ object BridgeStatus {
 
     fun sendStopped() {
         if (mutable.value.sendState != SendState.ERROR && mutable.value.sendState != SendState.STOPPED) send(SendState.STOPPED)
+    }
+
+    fun preparation(state: PreparationState, until: Long = 0L) {
+        mutable.update { it.copy(preparationState = state, preparationUntil = until) }
     }
 
     @Synchronized fun selectPeer(peerId: String, peerName: String) {

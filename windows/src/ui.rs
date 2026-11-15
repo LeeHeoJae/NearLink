@@ -199,7 +199,7 @@ pub fn run() -> Result<(), String> {
         let wake: Wake = Arc::new(move || {
             let _ = PostMessageW(Some(HWND(host_id as *mut _)), WAKE, WPARAM(0), LPARAM(0));
         });
-        let engine = Engine::new(model.clone(), wake);
+        let engine = Engine::new(model.clone(), wake, host_id);
         let app = Box::new(RefCell::new(App {
             host,
             main: HWND::default(),

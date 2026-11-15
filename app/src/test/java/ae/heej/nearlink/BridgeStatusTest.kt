@@ -9,6 +9,26 @@ import org.junit.Test
 class BridgeStatusTest {
     private val reading = LastReading("first", "첫 기기", 65, 1234)
 
+    @Test fun preparationCountdownUsesServiceDeadlineAndExpiresWithExistingPeers() {
+        val snapshot = BridgeSnapshot(sendState = SendState.ADVERTISING,
+            preparationState = PreparationState.OPEN, preparationUntil = 121_000L,
+            peers = mapOf("pc" to PeerSnapshot("pc", sendOnly = true)))
+        assertEquals(120L, snapshot.preparationSecondsRemaining(1_000L))
+        // Reopening the screen must use elapsed time instead of restarting a local timer.
+        assertEquals(30L, snapshot.preparationSecondsRemaining(91_000L))
+        assertEquals(1L, snapshot.preparationSecondsRemaining(120_999L))
+        assertEquals(0L, snapshot.preparationSecondsRemaining(121_000L))
+        assertEquals(0L, snapshot.preparationSecondsRemaining(125_000L))
+        assertTrue(snapshot.hasCompletedSetup())
+    }
+
+    @Test fun closedPreparationNeverShowsTimeEvenIfDeadlineWasRetained() {
+        PreparationState.entries.filter { it != PreparationState.OPEN }.forEach { state ->
+            assertEquals(0L, BridgeSnapshot(preparationState = state, preparationUntil = 121_000L)
+                .preparationSecondsRemaining(1_000L))
+        }
+    }
+
     @Test fun serviceCleanupKeepsUnconfirmedStopNoticeVisible() {
         BridgeStatus.send(SendState.STOPPED, "중지 여부 확인 필요")
         BridgeStatus.sendStopped()

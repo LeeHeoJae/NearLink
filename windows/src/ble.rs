@@ -18,7 +18,7 @@ use windows::{
             Advertisement::*, BluetoothAddressType, BluetoothCacheMode, BluetoothConnectionStatus,
             BluetoothLEDevice, GenericAttributeProfile::*,
         },
-        Enumeration::{DevicePairingProtectionLevel, DevicePairingResultStatus},
+        Enumeration::DevicePairingResultStatus,
     },
     Foundation::TypedEventHandler,
     Storage::Streams::{DataReader, DataWriter, IBuffer},
@@ -26,8 +26,42 @@ use windows::{
     core::{Error, GUID, HRESULT, IInspectable, Result, RuntimeType},
 };
 use windows_future::{AsyncStatus, IAsyncOperation};
+#[path = "pairing.rs"]
+mod pairing;
 
 pub type Wake = Arc<dyn Fn() + Send + Sync>;
+
+// Pairing needs another explicit user action after cancellation or rejection.
+// Do not bury its cause under automatic reconnect attempts.
+const PAIRING_REQUIRED: HRESULT = HRESULT(0x8004A001u32 as i32);
+
+fn pairing_failure(text: &str) -> Error {
+    Error::new(PAIRING_REQUIRED, text)
+}
+
+fn check_pairing_result(status: DevicePairingResultStatus) -> Result<()> {
+    if status == DevicePairingResultStatus::Paired
+        || status == DevicePairingResultStatus::AlreadyPaired
+    {
+        return Ok(());
+    }
+    let reason = match status {
+        DevicePairingResultStatus::PairingCanceled => "페어링을 취소했습니다.",
+        DevicePairingResultStatus::AuthenticationTimeout => "페어링 확인 시간이 지났습니다. 양쪽 기기의 요청을 확인해 주세요.",
+        DevicePairingResultStatus::ConnectionRejected | DevicePairingResultStatus::RejectedByHandler => "페어링 요청이 거절되었습니다.",
+        DevicePairingResultStatus::AccessDenied | DevicePairingResultStatus::AuthenticationNotAllowed => "Windows에서 페어링을 허용하지 않았습니다. 블루투스 권한을 확인해 주세요.",
+        DevicePairingResultStatus::NotReadyToPair => "기기가 페어링할 준비가 되지 않았습니다. Android에서 연결 준비를 눌러 주세요.",
+        DevicePairingResultStatus::AuthenticationFailure => "페어링 인증에 실패했습니다. 양쪽 기기의 기존 페어링 기록을 확인해 주세요.",
+        DevicePairingResultStatus::ProtectionLevelCouldNotBeMet => "암호화된 페어링을 설정하지 못했습니다.",
+        DevicePairingResultStatus::OperationAlreadyInProgress => "다른 페어링 요청이 진행 중입니다. 요청을 완료한 뒤 다시 시도해 주세요.",
+        DevicePairingResultStatus::RequiredHandlerNotRegistered => "Windows에서 페어링 확인 창을 시작하지 못했습니다.",
+        _ => "페어링을 완료하지 못했습니다.",
+    };
+    Err(pairing_failure(&format!(
+        "{reason} ‘다시 연결’을 누르면 페어링부터 다시 시도합니다. (상태 {})",
+        status.0
+    )))
+}
 
 fn failure(text: &str) -> Error {
     Error::new(HRESULT(0x80004005u32 as i32), text)
@@ -210,15 +244,21 @@ fn set_state(shared: &Shared, address: u64, state: State, detail: &str, wake: &W
     wake();
 }
 
+struct ConnectionContext<'a> {
+    shared: &'a Shared,
+    wake: &'a Wake,
+    owner: isize,
+}
+
 fn connection(
-    shared: &Shared,
+    context: ConnectionContext<'_>,
     address: u64,
-    pair: bool,
-    stop: &AtomicBool,
+    pair: &mut bool,
+    stop: &Arc<AtomicBool>,
     rx: &mpsc::Receiver<Event>,
     tx: &mpsc::Sender<Event>,
-    wake: &Wake,
 ) -> Result<()> {
+    let ConnectionContext { shared, wake, owner } = context;
     set_state(shared, address, State::Connecting, "", wake);
     let saved = shared
         .lock()
@@ -250,9 +290,9 @@ fn connection(
     };
     let pairing = link.device.DeviceInformation()?.Pairing()?;
     if !pairing.IsPaired()? {
-        if !pair {
-            return Err(failure(
-                "페어링이 필요합니다. 기기를 다시 추가하거나 Windows 블루투스 설정에서 페어링해 주세요.",
+        if !*pair {
+            return Err(pairing_failure(
+                "페어링이 필요합니다. ‘다시 연결’을 누르면 페어링 요청을 시작합니다.",
             ));
         }
         set_state(
@@ -262,19 +302,18 @@ fn connection(
             "양쪽 기기의 페어링 요청을 확인해 주세요.",
             wake,
         );
-        let result = wait(
-            pairing.PairWithProtectionLevelAsync(DevicePairingProtectionLevel::Encryption)?,
-            stop,
-            60,
-        )?;
-        if result.Status()? != DevicePairingResultStatus::Paired
-            && result.Status()? != DevicePairingResultStatus::AlreadyPaired
-        {
-            return Err(failure(
-                "페어링을 완료하지 못했습니다. Windows 블루투스 설정에서 먼저 페어링한 뒤 다시 연결해 주세요.",
-            ));
-        }
+        let result = pairing::request(&pairing, stop, owner);
+        result.map_err(|error| {
+            if error.code() == PAIRING_REQUIRED {
+                error
+            } else {
+                pairing_failure(&format!("페어링 요청에 실패했습니다. ‘다시 연결’을 눌러 다시 시도해 주세요. {error}"))
+            }
+        })?;
     }
+    // Only consume the user's pairing intent after pairing has actually succeeded.
+    // A transient failure while opening the device must not disable the first request.
+    *pair = false;
     // Keep Windows' paired identity for reconnects after LE address rotation.
     let device_id = link.device.DeviceId()?.to_string();
     let name = link.device.Name()?.to_string();
@@ -453,15 +492,17 @@ pub struct Engine {
     wake: Wake,
     workers: HashMap<u64, Worker>,
     scan: Option<Arc<AtomicBool>>,
+    owner: isize,
 }
 
 impl Engine {
-    pub fn new(shared: Shared, wake: Wake) -> Self {
+    pub fn new(shared: Shared, wake: Wake, owner: isize) -> Self {
         Self {
             shared,
             wake,
             workers: HashMap::new(),
             scan: None,
+            owner,
         }
     }
     pub fn start(&mut self, address: u64, pair: bool) {
@@ -472,6 +513,7 @@ impl Engine {
         let worker_tx = tx.clone();
         let shared = self.shared.clone();
         let wake = self.wake.clone();
+        let owner = self.owner;
         let handle = thread::spawn(move || {
             let _apartment = match Apartment::new() {
                 Ok(value) => value,
@@ -481,12 +523,18 @@ impl Engine {
                 }
             };
             let mut delay = 1u64;
-            let mut first = pair;
+            let mut may_pair = pair;
             while !stop.load(Ordering::Acquire) {
                 let started = Instant::now();
-                let result = connection(&shared, address, first, &stop, &rx, &tx, &wake);
-                first = false;
+                let result = connection(ConnectionContext { shared: &shared, wake: &wake, owner },
+                    address, &mut may_pair, &stop, &rx, &tx);
                 if stop.load(Ordering::Acquire) {
+                    break;
+                }
+                if let Err(error) = &result
+                    && error.code() == PAIRING_REQUIRED
+                {
+                    set_state(&shared, address, State::Stopped, &error.message(), &wake);
                     break;
                 }
                 if started.elapsed() > Duration::from_secs(90) {
@@ -653,4 +701,38 @@ fn scan(shared: &Shared, wake: &Wake, stop: &Arc<AtomicBool>) -> Result<()> {
     let _ = watcher.Stop();
     let _ = watcher.RemoveReceived(received);
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_confirmed_pairing_allows_gatt_setup() {
+        assert!(check_pairing_result(DevicePairingResultStatus::Paired).is_ok());
+        assert!(check_pairing_result(DevicePairingResultStatus::AlreadyPaired).is_ok());
+        for status in [
+            DevicePairingResultStatus::PairingCanceled,
+            DevicePairingResultStatus::AuthenticationTimeout,
+            DevicePairingResultStatus::NotReadyToPair,
+            DevicePairingResultStatus::AccessDenied,
+            DevicePairingResultStatus::AuthenticationFailure,
+            DevicePairingResultStatus::RequiredHandlerNotRegistered,
+            DevicePairingResultStatus::Failed,
+        ] {
+            let error = check_pairing_result(status).unwrap_err();
+            assert_eq!(error.code(), PAIRING_REQUIRED);
+            assert!(error.message().contains("다시 연결"));
+            assert!(error.message().contains(&format!("상태 {}", status.0)));
+        }
+    }
+
+    #[test]
+    fn pairing_failure_preserves_cause_instead_of_claiming_a_disconnect() {
+        let canceled = check_pairing_result(DevicePairingResultStatus::PairingCanceled).unwrap_err();
+        assert!(canceled.message().contains("취소"));
+        let timeout = check_pairing_result(DevicePairingResultStatus::AuthenticationTimeout).unwrap_err();
+        assert!(timeout.message().contains("확인 시간이"));
+        assert_ne!(failure("GATT failure").code(), PAIRING_REQUIRED);
+    }
 }

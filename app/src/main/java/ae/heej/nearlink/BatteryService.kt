@@ -72,11 +72,15 @@ class BatteryService : Service() {
     private var readyUntil = 0L
     // Separate from BLE callbacks: restarting Bluetooth must not cancel the safety deadline.
     private val leaseHandler = Handler(Looper.getMainLooper())
+    private val preparationExpired = Runnable {
+        readyUntil = 0L
+        BridgeStatus.preparation(PreparationState.EXPIRED)
+    }
     private val leaseExpired = Runnable {
         if (BridgeSession.savedPeer(this) != null) return@Runnable
         Log.i(TAG, "Peer heartbeat expired; stopping bridge")
         BridgeSession.stop(this)
-        BridgeStatus.send(SendState.STOPPED, "상대 기기와 연결을 확인하지 못해 중지했어요. 다시 연결해 주세요.")
+        BridgeStatus.send(SendState.STOPPED, "연결 준비 시간이 끝났어요. 새 기기를 추가하려면 다시 준비해 주세요.")
         BridgeStatus.receive(ReceiveState.STOPPED)
     }
 
@@ -88,6 +92,9 @@ class BatteryService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_PREPARE) {
             readyUntil = android.os.SystemClock.elapsedRealtime() + 120_000
+            BridgeStatus.preparation(PreparationState.OPEN, readyUntil)
+            leaseHandler.removeCallbacks(preparationExpired)
+            leaseHandler.postDelayed(preparationExpired, 120_000)
             renewLease()
         }
         return if (BridgeSession.savedPeer(this) != null) START_STICKY else START_NOT_STICKY
@@ -342,6 +349,8 @@ class BatteryService : Service() {
                             }
                             if (!receiveBattery) BridgeStatus.sendOnly(this@BatteryService, device.address, device.name ?: "Windows PC")
                             readyUntil = 0L
+                            leaseHandler.removeCallbacks(preparationExpired)
+                            BridgeStatus.preparation(PreparationState.ACCEPTED)
                             renewLease()
                             server?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, 0, null)
                         } catch (e: Exception) {
@@ -537,6 +546,10 @@ class BatteryService : Service() {
 
     override fun onDestroy() {
         leaseHandler.removeCallbacksAndMessages(null)
+        readyUntil = 0L
+        if (BridgeStatus.state.value.preparationState != PreparationState.EXPIRED) {
+            BridgeStatus.preparation(PreparationState.IDLE)
+        }
         unregisterReceiver(bluetoothStateReceiver)
         closeBle()
         unregisterReceiver(receiver)

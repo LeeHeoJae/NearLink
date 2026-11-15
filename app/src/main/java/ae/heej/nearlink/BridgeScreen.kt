@@ -18,6 +18,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import java.text.DateFormat
 import java.util.Date
+import kotlinx.coroutines.delay
 
 @Composable
 internal fun BridgeScreen(status: BridgeSnapshot, message: String?, messageIsError: Boolean, pairing: Boolean,
@@ -52,8 +53,15 @@ internal fun BridgeScreen(status: BridgeSnapshot, message: String?, messageIsErr
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             FilledTonalButton(onClick = { showAddOptions = true }, enabled = !pairing,
                                 modifier = Modifier.weight(1f).heightIn(min = 48.dp)) { Text("기기 추가") }
-                            OutlinedButton(onClick = onSend, enabled = !pairing,
-                                modifier = Modifier.weight(1f).heightIn(min = 48.dp)) { Text("연결 준비") }
+                            OutlinedButton(onClick = onSend, enabled = !pairing && status.sendState != SendState.STARTING &&
+                                status.sendState != SendState.WAITING_FOR_BLUETOOTH,
+                                modifier = Modifier.weight(1f).heightIn(min = 48.dp)) { Text(preparationButtonText(status)) }
+                        }
+                        if (status.preparationState != PreparationState.IDLE || status.sendState == SendState.ERROR ||
+                            status.sendState == SendState.STARTING || status.sendState == SendState.WAITING_FOR_BLUETOOTH) {
+                            Column(Modifier.fillMaxWidth().padding(top = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                PreparationFeedback(status)
+                            }
                         }
                         Spacer(Modifier.height(BridgeDesign.gap))
                         SectionTitle("연결한 기기")
@@ -143,19 +151,11 @@ private fun PreparationGroup(status: BridgeSnapshot, pairing: Boolean, onSend: (
     SectionTitle("연결 준비")
     Group {
         Column(Modifier.padding(BridgeDesign.groupInset), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            StatusText(when (status.sendState) {
-                SendState.STOPPED -> "이 기기를 연결할 준비가 필요해요"
-                SendState.STARTING -> "연결 준비 중…"
-                SendState.ADVERTISING -> "배터리 서비스 실행 중"
-                SendState.WAITING_FOR_BLUETOOTH -> "블루투스를 켜면 다시 준비해요"
-                SendState.ERROR -> "연결 준비 오류"
-            }, status.sendState == SendState.ERROR)
-            SecondaryText("이 기기를 상대 앱에서 추가하려면 ‘연결 준비’를 누르세요.")
-            status.sendDetail?.let { SecondaryText(it) }
+            PreparationFeedback(status)
             FilledTonalButton(onClick = onSend,
                 enabled = !pairing && status.sendState != SendState.STARTING && status.sendState != SendState.WAITING_FOR_BLUETOOTH,
                 shape = BridgeDesign.controlShape, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp), contentPadding = PaddingValues(12.dp)) {
-                Text(if (status.sendState == SendState.ERROR) "다시 준비" else "연결 준비")
+                Text(preparationButtonText(status))
             }
             if (pairing || (!status.hasCompletedSetup() && status.receiveState != ReceiveState.STOPPED)) {
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
@@ -169,6 +169,51 @@ private fun PreparationGroup(status: BridgeSnapshot, pairing: Boolean, onSend: (
             }
         }
     }
+}
+
+private fun preparationButtonText(status: BridgeSnapshot): String = when {
+    status.sendState == SendState.ERROR -> "다시 준비"
+    status.sendState == SendState.STARTING -> "준비 중…"
+    status.preparationState == PreparationState.OPEN -> "준비 시간 연장"
+    status.preparationState == PreparationState.EXPIRED -> "다시 준비"
+    else -> "연결 준비"
+}
+
+@Composable
+private fun PreparationFeedback(status: BridgeSnapshot) {
+    var now by remember(status.preparationUntil) { mutableLongStateOf(android.os.SystemClock.elapsedRealtime()) }
+    LaunchedEffect(status.preparationState, status.preparationUntil) {
+        while (status.preparationState == PreparationState.OPEN) {
+            now = android.os.SystemClock.elapsedRealtime()
+            if (now >= status.preparationUntil) break
+            delay(250)
+        }
+    }
+    val seconds = status.preparationSecondsRemaining(now)
+    val title = when {
+        status.sendState == SendState.ERROR -> "연결 준비에 실패했어요"
+        status.preparationState == PreparationState.EXPIRED -> "연결 준비 시간이 끝났어요"
+        status.sendState == SendState.WAITING_FOR_BLUETOOTH -> "블루투스가 꺼져 있어요"
+        status.sendState == SendState.STARTING -> "연결 준비 중…"
+        status.preparationState == PreparationState.ACCEPTED -> "기기 등록 요청을 수락했어요"
+        status.preparationState == PreparationState.OPEN && seconds == 0L -> "연결 준비 시간이 끝났어요"
+        status.preparationState == PreparationState.OPEN && status.sendState == SendState.ADVERTISING -> "이제 다른 기기에서 추가할 수 있어요"
+        else -> "새 기기를 추가하려면 연결 준비를 눌러 주세요"
+    }
+    StatusText(title, status.sendState == SendState.ERROR)
+    if (status.preparationState == PreparationState.OPEN && seconds > 0L && status.sendState == SendState.ADVERTISING) {
+        // Keep the ticking value outside the live region so TalkBack announces the state, not every second.
+        Text("남은 시간 ${seconds / 60}분 ${seconds % 60}초", style = MaterialTheme.typography.titleMedium)
+        SecondaryText("Windows 또는 상대 기기의 NearLink에서 ‘기기 추가’를 누르고 이 기기를 선택하세요.")
+    } else if (status.sendState != SendState.ERROR && (status.preparationState == PreparationState.EXPIRED ||
+        (status.preparationState == PreparationState.OPEN && seconds == 0L))) {
+        SecondaryText("새 기기를 추가하려면 ‘다시 준비’를 누르세요. 기존 기기의 등록은 유지돼요.")
+    } else if (status.sendState == SendState.WAITING_FOR_BLUETOOTH) {
+        SecondaryText("블루투스를 켜 주세요. 준비 시간이 지나면 다시 준비해 주세요.")
+    } else if (status.preparationState == PreparationState.ACCEPTED && status.sendState != SendState.ERROR) {
+        SecondaryText("상대 기기에서 연결이 완료되는지 확인해 주세요.")
+    }
+    status.sendDetail?.let { SecondaryText(it) }
 }
 
 @Composable

@@ -33,7 +33,6 @@ class MainActivity : ComponentActivity() {
     private var pendingAction: Action? = null
     private var pendingPeer: String? = null
     private var setupRequested by mutableStateOf(false)
-    private var preparationNotice by mutableStateOf<String?>(null)
     private var showBatteryRecommendation by mutableStateOf(false)
 
     private val pairing by lazy { ViewModelProvider(this)[PairingModel::class.java] }
@@ -58,6 +57,9 @@ class MainActivity : ComponentActivity() {
         showBatteryRecommendation = savedInstanceState?.getBoolean("battery_recommendation") ?: false
         setContent {
             val status by BridgeStatus.state.collectAsState()
+            LaunchedEffect(status.preparationState) {
+                if (status.preparationState == PreparationState.ACCEPTED) recommendBatteryExemption()
+            }
             LaunchedEffect(pairing.chooser) {
                 pairing.chooser?.let {
                     pairing.chooser = null
@@ -75,7 +77,7 @@ class MainActivity : ComponentActivity() {
             }
             BridgeTheme {
                 Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-                    BridgeScreen(status, message ?: pairing.message ?: preparationNotice.takeIf { !status.hasCompletedSetup() || setupRequested },
+                    BridgeScreen(status, message ?: pairing.message,
                         message != null || (pairing.message != null && !pairing.busy), pairing.busy, ::requestSend, ::requestConnect,
                         { ensurePermissions(Action.ADD) }, ::stopBridge,
                         onReconnect = { address -> pendingPeer = address; ensurePermissions(Action.RESUME) },
@@ -147,7 +149,6 @@ class MainActivity : ComponentActivity() {
     private fun requestConnect() = ensurePermissions(Action.CONNECT)
 
     private fun ensurePermissions(action: Action) {
-        preparationNotice = null
         val required = if (Build.VERSION.SDK_INT >= 31) {
             arrayOf(Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_ADVERTISE)
         } else arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
@@ -178,8 +179,6 @@ class MainActivity : ComponentActivity() {
                 Action.SEND -> {
                     startForegroundService(Intent(this, BatteryService::class.java).setAction(BatteryService.ACTION_PREPARE))
                     message = null
-                    preparationNotice = "연결 준비를 요청했어요. 상대 기기에서 2분 안에 이 기기를 추가해 주세요."
-                    recommendBatteryExemption()
                 }
                 Action.CONNECT -> {
                     val bonded = adapter.bondedDevices.sortedBy { deviceName(it) }
@@ -225,7 +224,6 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun stopBridge() {
-        preparationNotice = null
         pendingAction = null
         peers = null
         pairing.cancel()
