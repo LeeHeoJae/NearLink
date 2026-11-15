@@ -279,7 +279,15 @@ pub fn run() -> Result<(), String> {
             DispatchMessageW(&message);
         }
         let mut state = app.borrow_mut();
-        state.engine.cancel_scan();
+        state.engine.shutdown();
+        // A final BLE callback may have learned the paired identity just before
+        // Quit. Persist it while the instance mutex and host still belong to us.
+        if !state.preview {
+            let model = state.model.lock().unwrap();
+            if model.dirty {
+                state.persist(&model.settings)?;
+            }
+        }
         state.remove_tray();
         for font in [
             state.font,

@@ -47,14 +47,30 @@ fn check_pairing_result(status: DevicePairingResultStatus) -> Result<()> {
     }
     let reason = match status {
         DevicePairingResultStatus::PairingCanceled => "페어링을 취소했습니다.",
-        DevicePairingResultStatus::AuthenticationTimeout => "페어링 확인 시간이 지났습니다. 양쪽 기기의 요청을 확인해 주세요.",
-        DevicePairingResultStatus::ConnectionRejected | DevicePairingResultStatus::RejectedByHandler => "페어링 요청이 거절되었습니다.",
-        DevicePairingResultStatus::AccessDenied | DevicePairingResultStatus::AuthenticationNotAllowed => "Windows에서 페어링을 허용하지 않았습니다. 블루투스 권한을 확인해 주세요.",
-        DevicePairingResultStatus::NotReadyToPair => "기기가 페어링할 준비가 되지 않았습니다. Android에서 연결 준비를 눌러 주세요.",
-        DevicePairingResultStatus::AuthenticationFailure => "페어링 인증에 실패했습니다. 양쪽 기기의 기존 페어링 기록을 확인해 주세요.",
-        DevicePairingResultStatus::ProtectionLevelCouldNotBeMet => "암호화된 페어링을 설정하지 못했습니다.",
-        DevicePairingResultStatus::OperationAlreadyInProgress => "다른 페어링 요청이 진행 중입니다. 요청을 완료한 뒤 다시 시도해 주세요.",
-        DevicePairingResultStatus::RequiredHandlerNotRegistered => "Windows에서 페어링 확인 창을 시작하지 못했습니다.",
+        DevicePairingResultStatus::AuthenticationTimeout => {
+            "페어링 확인 시간이 지났습니다. 양쪽 기기의 요청을 확인해 주세요."
+        }
+        DevicePairingResultStatus::ConnectionRejected
+        | DevicePairingResultStatus::RejectedByHandler => "페어링 요청이 거절되었습니다.",
+        DevicePairingResultStatus::AccessDenied
+        | DevicePairingResultStatus::AuthenticationNotAllowed => {
+            "Windows에서 페어링을 허용하지 않았습니다. 블루투스 권한을 확인해 주세요."
+        }
+        DevicePairingResultStatus::NotReadyToPair => {
+            "기기가 페어링할 준비가 되지 않았습니다. Android에서 연결 준비를 눌러 주세요."
+        }
+        DevicePairingResultStatus::AuthenticationFailure => {
+            "페어링 인증에 실패했습니다. 양쪽 기기의 기존 페어링 기록을 확인해 주세요."
+        }
+        DevicePairingResultStatus::ProtectionLevelCouldNotBeMet => {
+            "암호화된 페어링을 설정하지 못했습니다."
+        }
+        DevicePairingResultStatus::OperationAlreadyInProgress => {
+            "다른 페어링 요청이 진행 중입니다. 요청을 완료한 뒤 다시 시도해 주세요."
+        }
+        DevicePairingResultStatus::RequiredHandlerNotRegistered => {
+            "Windows에서 페어링 확인 창을 시작하지 못했습니다."
+        }
         _ => "페어링을 완료하지 못했습니다.",
     };
     Err(pairing_failure(&format!(
@@ -65,6 +81,16 @@ fn check_pairing_result(status: DevicePairingResultStatus) -> Result<()> {
 
 fn failure(text: &str) -> Error {
     Error::new(HRESULT(0x80004005u32 as i32), text)
+}
+
+fn gatt_failure(stage: &str, status: GattCommunicationStatus) -> Error {
+    let reason = match status {
+        GattCommunicationStatus::Unreachable => "기기 응답 없음 (Unreachable)",
+        GattCommunicationStatus::AccessDenied => "접근 거부 (AccessDenied)",
+        GattCommunicationStatus::ProtocolError => "GATT 프로토콜 오류 (ProtocolError)",
+        _ => "알 수 없는 GATT 오류",
+    };
+    failure(&format!("{stage}: {reason} (상태 {}).", status.0))
 }
 
 struct Apartment;
@@ -176,6 +202,7 @@ enum Event {
 /// Owns every registration; releasing a failed attempt removes callbacks before reconnect.
 struct Link {
     device: BluetoothLEDevice,
+    session: Option<GattSession>,
     service: Option<GattDeviceService>,
     tokens: Vec<(GattCharacteristic, i64)>,
     changed: Option<i64>,
@@ -194,6 +221,10 @@ impl Drop for Link {
         }
         if let Some(service) = &self.service {
             let _ = service.Close();
+        }
+        if let Some(session) = &self.session {
+            let _ = session.SetMaintainConnection(false);
+            let _ = session.Close();
         }
         let _ = self.device.Close();
     }
@@ -258,7 +289,11 @@ fn connection(
     rx: &mpsc::Receiver<Event>,
     tx: &mpsc::Sender<Event>,
 ) -> Result<()> {
-    let ConnectionContext { shared, wake, owner } = context;
+    let ConnectionContext {
+        shared,
+        wake,
+        owner,
+    } = context;
     set_state(shared, address, State::Connecting, "", wake);
     let saved = shared
         .lock()
@@ -283,6 +318,7 @@ fn connection(
     let device = wait(operation, stop, 20)?;
     let mut link = Link {
         device,
+        session: None,
         service: None,
         tokens: vec![],
         changed: None,
@@ -307,13 +343,24 @@ fn connection(
             if error.code() == PAIRING_REQUIRED {
                 error
             } else {
-                pairing_failure(&format!("페어링 요청에 실패했습니다. ‘다시 연결’을 눌러 다시 시도해 주세요. {error}"))
+                pairing_failure(&format!(
+                    "페어링 요청에 실패했습니다. ‘다시 연결’을 눌러 다시 시도해 주세요. {error}"
+                ))
             }
         })?;
     }
     // Only consume the user's pairing intent after pairing has actually succeeded.
     // A transient failure while opening the device must not disable the first request.
     *pair = false;
+    // Own a connection request for the whole attempt. A device object alone does
+    // not keep the LE link alive across app restarts or service discovery gaps.
+    let session = wait(
+        GattSession::FromDeviceIdAsync(&link.device.BluetoothDeviceId()?)?,
+        stop,
+        20,
+    )?;
+    link.session = Some(session.clone());
+    session.SetMaintainConnection(true)?;
     // Keep Windows' paired identity for reconnects after LE address rotation.
     let device_id = link.device.DeviceId()?.to_string();
     let name = link.device.Name()?.to_string();
@@ -370,9 +417,13 @@ fn connection(
         stop,
         20,
     )?;
-    if result.Status()? != GattCommunicationStatus::Success || result.Services()?.Size()? == 0 {
+    let status = result.Status()?;
+    if status != GattCommunicationStatus::Success {
+        return Err(gatt_failure("배터리 서비스 검색 실패", status));
+    }
+    if result.Services()?.Size()? == 0 {
         return Err(failure(
-            "기기의 NearLink에서 연결 준비를 누르고 가까이 두세요. 블루투스가 꺼져 있으면 켜 주세요.",
+            "기기에 NearLink 배터리 서비스가 없습니다. Android NearLink의 실행 상태를 확인해 주세요.",
         ));
     }
     let service = result.Services()?.GetAt(0)?;
@@ -477,10 +528,15 @@ struct Worker {
     tx: mpsc::Sender<Event>,
     handle: Option<thread::JoinHandle<()>>,
 }
-impl Drop for Worker {
-    fn drop(&mut self) {
+impl Worker {
+    fn cancel(&self) {
         self.stop.store(true, Ordering::Release);
         let _ = self.tx.send(Event::Stop);
+    }
+}
+impl Drop for Worker {
+    fn drop(&mut self) {
+        self.cancel();
         if let Some(handle) = self.handle.take() {
             let _ = handle.join();
         }
@@ -526,8 +582,18 @@ impl Engine {
             let mut may_pair = pair;
             while !stop.load(Ordering::Acquire) {
                 let started = Instant::now();
-                let result = connection(ConnectionContext { shared: &shared, wake: &wake, owner },
-                    address, &mut may_pair, &stop, &rx, &tx);
+                let result = connection(
+                    ConnectionContext {
+                        shared: &shared,
+                        wake: &wake,
+                        owner,
+                    },
+                    address,
+                    &mut may_pair,
+                    &stop,
+                    &rx,
+                    &tx,
+                );
                 if stop.load(Ordering::Acquire) {
                     break;
                 }
@@ -584,6 +650,15 @@ impl Engine {
             stop.store(true, Ordering::Release);
         }
     }
+    pub fn shutdown(&mut self) {
+        self.cancel_scan();
+        // Cancel every peer before joining any worker; each Link releases its
+        // callbacks, service and maintained session before the instance lock opens.
+        for worker in self.workers.values() {
+            worker.cancel();
+        }
+        self.workers.clear();
+    }
     pub fn scan(&mut self) {
         self.cancel_scan();
         let stop = Arc::new(AtomicBool::new(false));
@@ -618,8 +693,7 @@ impl Engine {
 }
 impl Drop for Engine {
     fn drop(&mut self) {
-        self.cancel_scan();
-        self.workers.clear();
+        self.shutdown();
     }
 }
 
@@ -708,6 +782,67 @@ mod tests {
     use super::*;
 
     #[test]
+    fn gatt_discovery_failures_preserve_windows_status() {
+        for (status, expected) in [
+            (GattCommunicationStatus::Unreachable, "Unreachable"),
+            (GattCommunicationStatus::AccessDenied, "AccessDenied"),
+            (GattCommunicationStatus::ProtocolError, "ProtocolError"),
+        ] {
+            let error = gatt_failure("배터리 서비스 검색 실패", status);
+            assert!(error.message().contains(expected));
+            assert!(error.message().contains("배터리 서비스 검색 실패"));
+            assert_ne!(error.code(), PAIRING_REQUIRED);
+        }
+    }
+
+    #[test]
+    fn shutdown_cancels_all_peers_before_joining_and_can_repeat() {
+        use crate::{config::Settings, model::Model};
+        use std::sync::Mutex;
+        let shared = Arc::new(Mutex::new(Model::new(Settings::default())));
+        let mut engine = Engine::new(shared, Arc::new(|| {}), 0);
+        let flags: Vec<_> = (0..2).map(|_| Arc::new(AtomicBool::new(false))).collect();
+        let (results, completed) = mpsc::channel();
+        for (address, stop) in flags.iter().enumerate() {
+            let (tx, rx) = mpsc::channel();
+            let all_flags = flags.clone();
+            let results = results.clone();
+            let handle = thread::spawn(move || {
+                assert!(matches!(
+                    rx.recv_timeout(Duration::from_secs(2)),
+                    Ok(Event::Stop)
+                ));
+                let deadline = Instant::now() + Duration::from_millis(500);
+                while !all_flags.iter().all(|flag| flag.load(Ordering::Acquire))
+                    && Instant::now() < deadline
+                {
+                    thread::yield_now();
+                }
+                results
+                    .send(all_flags.iter().all(|flag| flag.load(Ordering::Acquire)))
+                    .unwrap();
+            });
+            engine.workers.insert(
+                address as u64,
+                Worker {
+                    stop: stop.clone(),
+                    tx,
+                    handle: Some(handle),
+                },
+            );
+        }
+        let scanning = Arc::new(AtomicBool::new(false));
+        engine.scan = Some(scanning.clone());
+        engine.shutdown();
+        assert!(scanning.load(Ordering::Acquire));
+        assert!(engine.workers.is_empty());
+        for _ in 0..2 {
+            assert!(completed.recv_timeout(Duration::from_secs(2)).unwrap());
+        }
+        engine.shutdown();
+    }
+
+    #[test]
     fn only_confirmed_pairing_allows_gatt_setup() {
         assert!(check_pairing_result(DevicePairingResultStatus::Paired).is_ok());
         assert!(check_pairing_result(DevicePairingResultStatus::AlreadyPaired).is_ok());
@@ -729,9 +864,11 @@ mod tests {
 
     #[test]
     fn pairing_failure_preserves_cause_instead_of_claiming_a_disconnect() {
-        let canceled = check_pairing_result(DevicePairingResultStatus::PairingCanceled).unwrap_err();
+        let canceled =
+            check_pairing_result(DevicePairingResultStatus::PairingCanceled).unwrap_err();
         assert!(canceled.message().contains("취소"));
-        let timeout = check_pairing_result(DevicePairingResultStatus::AuthenticationTimeout).unwrap_err();
+        let timeout =
+            check_pairing_result(DevicePairingResultStatus::AuthenticationTimeout).unwrap_err();
         assert!(timeout.message().contains("확인 시간이"));
         assert_ne!(failure("GATT failure").code(), PAIRING_REQUIRED);
     }
