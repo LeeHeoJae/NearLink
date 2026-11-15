@@ -54,6 +54,8 @@ pub struct Settings {
     pub notifications: bool,
     pub low_threshold: u8,
     pub full_notifications: bool,
+    /// None keeps the neutral app icon; Some shows a chosen peer's fresh level.
+    pub tray_peer: Option<u64>,
 }
 
 impl Default for Settings {
@@ -64,6 +66,7 @@ impl Default for Settings {
             notifications: true,
             low_threshold: 20,
             full_notifications: true,
+            tray_peer: None,
         }
     }
 }
@@ -138,6 +141,8 @@ mod tests {
         let settings = Settings::default();
         save(&root, &settings).unwrap();
         let mut changed = load(&root).unwrap();
+        assert_eq!(changed.tray_peer, None);
+        changed.tray_peer = Some(7);
         changed.peers.push(SavedPeer {
             address: 7,
             name: "휴대폰".into(),
@@ -149,6 +154,7 @@ mod tests {
         save(&root, &changed).unwrap();
         assert_eq!(load(&root).unwrap().peers[0].label(), "업무용");
         assert!(!load(&root).unwrap().peers[0].enabled);
+        assert_eq!(load(&root).unwrap().tray_peer, Some(7));
         changed.peers.push(changed.peers[0].clone());
         save(&root, &changed).unwrap();
         assert!(load(&root).is_err());

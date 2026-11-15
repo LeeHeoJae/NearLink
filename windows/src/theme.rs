@@ -56,6 +56,26 @@ pub const fn rgb(r: u8, g: u8, b: u8) -> COLORREF {
     COLORREF(r as u32 | (g as u32) << 8 | (b as u32) << 16)
 }
 
+/// The taskbar follows Windows mode, independently of the app's light/dark mode.
+pub unsafe fn tray_color(theme: &Theme) -> COLORREF {
+    if theme.contrast {
+        return theme.text;
+    }
+    let dark = if preview() && argument("--preview-theme").is_some() {
+        theme.dark
+    } else {
+        dword(
+            w!("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize"),
+            w!("SystemUsesLightTheme"),
+        ) != Some(1)
+    };
+    if dark {
+        rgb(238, 238, 238)
+    } else {
+        rgb(38, 38, 38)
+    }
+}
+
 pub struct Theme {
     pub dark: bool,
     pub contrast: bool,

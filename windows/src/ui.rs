@@ -5,6 +5,7 @@ use crate::{
     config::{self, SavedPeer},
     model::{Model, Peer, Shared, State},
     theme::{self, Theme},
+    tray::Artwork,
 };
 use std::{
     cell::RefCell,
@@ -113,6 +114,8 @@ struct App {
     text_scale: u32,
     preview: bool,
     icon: HICON,
+    tray_icon: HICON,
+    tray_artwork: Option<Artwork>,
     instance: HINSTANCE,
     taskbar_message: u32,
     model: Shared,
@@ -216,6 +219,8 @@ pub fn run() -> Result<(), String> {
             text_scale: theme::text_scale(),
             preview,
             icon,
+            tray_icon: HICON::default(),
+            tray_artwork: None,
             instance,
             taskbar_message: RegisterWindowMessageW(w!("TaskbarCreated")),
             model,
@@ -229,7 +234,7 @@ pub fn run() -> Result<(), String> {
         let pointer = app.as_ref() as *const RefCell<App>;
         app.borrow_mut().callback = pointer;
         SetWindowLongPtrW(host, GWLP_USERDATA, pointer as isize);
-        app.borrow().add_tray().map_err(|e| e.to_string())?;
+        app.borrow_mut().add_tray().map_err(|e| e.to_string())?;
         if !std::env::args().any(|arg| arg == "--hidden") {
             app.borrow_mut().show_main().map_err(|e| e.to_string())?;
         }
@@ -290,6 +295,7 @@ pub fn run() -> Result<(), String> {
             let _ = ImageList_Destroy(Some(state.row_images));
         }
         let _ = DestroyIcon(state.icon);
+        let _ = DestroyIcon(state.tray_icon);
         let _ = DestroyWindow(host);
         let _ = CloseHandle(mutex);
         Ok(())
@@ -396,6 +402,11 @@ unsafe extern "system" fn window_proc(
         }
         SHOW => {
             let _ = app.show_main();
+            LRESULT(0)
+        }
+        WM_TIMER if hwnd == app.host => {
+            app.update_tray_icon();
+            app.update_tooltip();
             LRESULT(0)
         }
         WM_TIMER => {
@@ -549,6 +560,7 @@ impl App {
 
     unsafe fn appearance(&mut self) {
         self.theme = Theme::load();
+        self.update_tray_icon();
         self.text_scale = theme::text_scale();
         self.update_font();
         self.resize_rows();
@@ -1427,6 +1439,7 @@ impl App {
             self.model.lock().unwrap().message = error;
         }
         self.update_tooltip();
+        self.update_tray_icon();
         for (parent, list) in [(self.main, self.list), (self.quick, self.quick_list)] {
             if parent.is_invalid() {
                 continue;
@@ -1960,6 +1973,9 @@ impl App {
             return;
         }
         settings.peers.retain(|peer| peer.address != address);
+        if settings.tray_peer == Some(address) {
+            settings.tray_peer = None;
+        }
         if let Err(error) = self.persist(&settings) {
             fatal(&error);
             return;
@@ -2016,43 +2032,104 @@ impl App {
             ..Default::default()
         }
     }
-    unsafe fn add_tray(&self) -> windows::core::Result<()> {
+    unsafe fn add_tray(&mut self) -> windows::core::Result<()> {
+        let artwork = self.current_tray_artwork();
+        let icon = artwork.create()?;
         let mut data = self.tray_data();
-        data.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
+        data.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP | NIF_SHOWTIP;
         data.uCallbackMessage = TRAY;
-        data.hIcon = self.icon;
+        data.hIcon = icon;
         copy_wide(&mut data.szTip, "NearLink · 기기 배터리");
         if !Shell_NotifyIconW(NIM_ADD, &data).as_bool() {
+            let _ = DestroyIcon(icon);
             return Err(windows::core::Error::from_thread());
         }
+        let old = std::mem::replace(&mut self.tray_icon, icon);
+        if !old.is_invalid() {
+            let _ = DestroyIcon(old);
+        }
+        self.tray_artwork = Some(artwork);
         data.Anonymous.uVersion = NOTIFYICON_VERSION_4;
         let _ = Shell_NotifyIconW(NIM_SETVERSION, &data);
+        self.tray_freshness_timer(artwork);
+        self.update_tooltip();
         Ok(())
+    }
+    unsafe fn current_tray_artwork(&self) -> Artwork {
+        let model = self.model.lock().unwrap();
+        let level = model
+            .settings
+            .tray_peer
+            .and_then(|address| model.peers.get(&address))
+            .and_then(crate::tray::live_level);
+        Artwork::current(theme::tray_color(&self.theme), level)
+    }
+    unsafe fn tray_freshness_timer(&self, artwork: Artwork) {
+        // Only a displayed number needs an expiry wake-up while all windows are closed.
+        if artwork.level.is_some() {
+            SetTimer(Some(self.host), 2, 60_000, None);
+        } else {
+            let _ = KillTimer(Some(self.host), 2);
+        }
+    }
+    unsafe fn update_tray_icon(&mut self) {
+        let artwork = self.current_tray_artwork();
+        if self.tray_artwork == Some(artwork) {
+            return;
+        }
+        let Ok(icon) = artwork.create() else {
+            return;
+        };
+        let mut data = self.tray_data();
+        data.uFlags = NIF_ICON;
+        data.hIcon = icon;
+        if Shell_NotifyIconW(NIM_MODIFY, &data).as_bool() {
+            let old = std::mem::replace(&mut self.tray_icon, icon);
+            self.tray_artwork = Some(artwork);
+            if !old.is_invalid() {
+                let _ = DestroyIcon(old);
+            }
+            self.tray_freshness_timer(artwork);
+        } else {
+            let _ = DestroyIcon(icon);
+        }
     }
     unsafe fn remove_tray(&self) {
         let _ = Shell_NotifyIconW(NIM_DELETE, &self.tray_data());
     }
     unsafe fn update_tooltip(&self) {
         let model = self.model.lock().unwrap();
-        let labels: Vec<_> = model
-            .peers
-            .values()
+        let mut peers: Vec<_> = model.peers.values().collect();
+        peers.sort_by_key(|peer| Some(peer.saved.address) != model.settings.tray_peer);
+        let labels: Vec<_> = peers
+            .into_iter()
             .take(4)
             .map(|peer| {
                 format!(
-                    "{} {} · {}",
-                    peer.saved.label(),
+                    "{}{} {} · {} · {}",
+                    if Some(peer.saved.address) == model.settings.tray_peer {
+                        "대표: "
+                    } else {
+                        ""
+                    },
+                    peer.saved.label().chars().take(18).collect::<String>(),
                     peer.battery_text(),
+                    peer.charge_text(),
                     peer.status_text()
                 )
             })
             .collect();
         let mut data = self.tray_data();
-        data.uFlags = NIF_TIP;
+        data.uFlags = NIF_TIP | NIF_SHOWTIP;
         copy_wide(
             &mut data.szTip,
             &format!(
-                "NearLink\n{}",
+                "NearLink{}\n{}",
+                if self.preview {
+                    " · 예시 데이터"
+                } else {
+                    ""
+                },
                 if labels.is_empty() {
                     "연결한 기기가 없습니다.".into()
                 } else {
@@ -2079,6 +2156,36 @@ impl App {
             return;
         };
         let model = self.model.lock().unwrap();
+        let addresses: Vec<_> = model.peers.keys().copied().collect();
+        if let Ok(display) = CreatePopupMenu() {
+            let _ = AppendMenuW(display, MF_STRING, 1000, w!("배터리 윤곽선 (기본)"));
+            for (index, peer) in model.peers.values().enumerate() {
+                let label = format!("{} 잔량 숫자", peer.saved.label().replace('&', "&&"));
+                let _ = AppendMenuW(
+                    display,
+                    MF_STRING,
+                    1001 + index,
+                    PCWSTR(wide(&label).as_ptr()),
+                );
+            }
+            let selected = model
+                .settings
+                .tray_peer
+                .and_then(|address| addresses.iter().position(|value| *value == address))
+                .map_or(1000, |index| 1001 + index as u32);
+            let _ = CheckMenuRadioItem(
+                display,
+                1000,
+                1000 + addresses.len() as u32,
+                selected,
+                MF_BYCOMMAND.0,
+            );
+            if AppendMenuW(menu, MF_POPUP, display.0 as usize, w!("트레이 표시(&T)")).is_err()
+            {
+                let _ = DestroyMenu(display);
+            }
+            let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+        }
         if model.peers.is_empty() {
             let _ = AppendMenuW(
                 menu,
@@ -2119,6 +2226,20 @@ impl App {
         let _ = PostMessageW(Some(self.host), WM_NULL, WPARAM(0), LPARAM(0));
         let _ = DestroyMenu(menu);
         match selected {
+            1000..=1016 => {
+                let mut settings = self.model.lock().unwrap().settings.clone();
+                settings.tray_peer = if selected == 1000 {
+                    None
+                } else {
+                    addresses.get(selected as usize - 1001).copied()
+                };
+                if let Err(error) = self.persist(&settings) {
+                    fatal(&error);
+                } else {
+                    self.model.lock().unwrap().settings = settings;
+                    self.refresh();
+                }
+            }
             1 | 20..=35 => {
                 let _ = self.show_main();
             }

@@ -5,6 +5,7 @@ mod config;
 mod model;
 mod protocol;
 mod theme;
+mod tray;
 mod ui;
 
 fn main() {
