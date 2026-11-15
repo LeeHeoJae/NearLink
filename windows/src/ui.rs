@@ -61,6 +61,41 @@ fn wide(value: &str) -> Vec<u16> {
 unsafe fn send(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     SendMessageW(hwnd, message, Some(wparam), Some(lparam))
 }
+unsafe fn set_text_if_changed(hwnd: HWND, text: &str) {
+    let text = wide(text);
+    let mut current = vec![0; GetWindowTextLengthW(hwnd) as usize + 1];
+    GetWindowTextW(hwnd, &mut current);
+    if current == text {
+        return;
+    }
+    // STATIC can paint synchronously during WM_SETTEXT, while App is borrowed.
+    // Defer that paint so the parent's theme callbacks can borrow App normally.
+    // Only restore redraw for visible controls: WM_SETREDRAW(TRUE) adds WS_VISIBLE.
+    let visible = GetWindowLongPtrW(hwnd, GWL_STYLE) as u32 & WS_VISIBLE.0 != 0;
+    if visible {
+        send(hwnd, WM_SETREDRAW, WPARAM(0), LPARAM(0));
+    }
+    let _ = SetWindowTextW(hwnd, PCWSTR(text.as_ptr()));
+    if visible {
+        send(hwnd, WM_SETREDRAW, WPARAM(1), LPARAM(0));
+        let _ = InvalidateRect(Some(hwnd), None, true);
+    }
+}
+
+unsafe fn enable_if_changed(hwnd: HWND, enabled: bool) {
+    if IsWindowEnabled(hwnd).as_bool() == enabled {
+        return;
+    }
+    let visible = GetWindowLongPtrW(hwnd, GWL_STYLE) as u32 & WS_VISIBLE.0 != 0;
+    if visible {
+        send(hwnd, WM_SETREDRAW, WPARAM(0), LPARAM(0));
+    }
+    let _ = EnableWindow(hwnd, enabled);
+    if visible {
+        send(hwnd, WM_SETREDRAW, WPARAM(1), LPARAM(0));
+        let _ = InvalidateRect(Some(hwnd), None, false);
+    }
+}
 fn copy_wide<const N: usize>(target: &mut [u16; N], value: &str) {
     target.fill(0);
     let mut offset = 0;
@@ -1416,7 +1451,7 @@ impl App {
             .and_then(|address| model.peers.get(&address));
         for id in [RETRY, STOP, ALIAS, FORGET, ACTIONS] {
             let enabled = peer.is_some_and(|p| id != STOP || p.state != State::Stopped);
-            let _ = EnableWindow(
+            enable_if_changed(
                 GetDlgItem(Some(self.main), id as i32).unwrap_or_default(),
                 enabled,
             );
@@ -1427,8 +1462,7 @@ impl App {
             else if peer.state != State::Connected && peer.updated.is_some() { "마지막으로 받은 잔량입니다. 현재 값과 다를 수 있습니다.".into() }
             else { "배터리 값이 바뀌면 자동으로 갱신합니다. 마지막 수신 시각은 배터리 데이터 수신 기준입니다.".into() }
         }).unwrap_or_else(|| if model.message.is_empty() { "기기를 선택하면 연결 상태를 확인할 수 있습니다.".into() } else { model.message.clone() });
-        let _ = SetWindowTextW(self.info, PCWSTR(wide(&detail).as_ptr()));
-        let _ = PostMessageW(Some(self.host), REDRAW, WPARAM(0), LPARAM(0));
+        set_text_if_changed(self.info, &detail);
     }
 
     unsafe fn refresh(&mut self) {
@@ -1466,21 +1500,36 @@ impl App {
             };
             let top = send(list, LVM_GETTOPINDEX, WPARAM(0), LPARAM(0)).0;
             SetWindowLongPtrW(parent, GWLP_USERDATA, 0);
-            send(list, WM_SETREDRAW, WPARAM(0), LPARAM(0));
             let model = self.model.lock().unwrap();
             let next: Vec<_> = model.peers.keys().copied().collect();
-            let _ = ShowWindow(list, if next.is_empty() { SW_HIDE } else { SW_SHOW });
-            if let Ok(empty) = GetDlgItem(Some(parent), 305) {
-                let _ = ShowWindow(empty, if next.is_empty() { SW_SHOW } else { SW_HIDE });
-            }
-            if send(list, LVM_GETITEMCOUNT, WPARAM(0), LPARAM(0)).0 as usize != next.len()
-                || self.rows != next
-            {
+            let rebuild = send(list, LVM_GETITEMCOUNT, WPARAM(0), LPARAM(0)).0 as usize
+                != next.len()
+                || self.rows != next;
+            if rebuild {
+                send(list, WM_SETREDRAW, WPARAM(0), LPARAM(0));
                 send(list, LVM_DELETEALLITEMS, WPARAM(0), LPARAM(0));
             }
             let count = send(list, LVM_GETITEMCOUNT, WPARAM(0), LPARAM(0)).0 as usize;
             for (row, peer) in model.peers.values().enumerate() {
                 let mut label = wide(&peer.accessible_text());
+                if !rebuild {
+                    let mut current = vec![0; label.len() + 1];
+                    let mut item = LVITEMW {
+                        pszText: windows::core::PWSTR(current.as_mut_ptr()),
+                        cchTextMax: current.len() as i32,
+                        ..Default::default()
+                    };
+                    let length = send(
+                        list,
+                        LVM_GETITEMTEXTW,
+                        WPARAM(row),
+                        LPARAM(&mut item as *mut _ as isize),
+                    )
+                    .0 as usize;
+                    if current[..length] == label[..label.len() - 1] {
+                        continue;
+                    }
+                }
                 let item = LVITEMW {
                     mask: LVIF_TEXT,
                     iItem: row as i32,
@@ -1497,7 +1546,7 @@ impl App {
                     WPARAM(if row >= count { 0 } else { row }),
                     LPARAM(&item as *const _ as isize),
                 );
-                if address == Some(peer.saved.address) {
+                if rebuild && address == Some(peer.saved.address) {
                     let item = LVITEMW {
                         stateMask: LIST_VIEW_ITEM_STATE_FLAGS(LVIS_SELECTED.0 | LVIS_FOCUSED.0),
                         state: LIST_VIEW_ITEM_STATE_FLAGS(LVIS_SELECTED.0 | LVIS_FOCUSED.0),
@@ -1512,12 +1561,19 @@ impl App {
                 }
             }
             // Keep the same top row while refreshing the accessible strings.
-            if top >= 0 && (top as usize) < next.len() {
+            if rebuild && top >= 0 && (top as usize) < next.len() {
                 send(list, LVM_ENSUREVISIBLE, WPARAM(top as usize), LPARAM(0));
             }
+            if rebuild {
+                send(list, WM_SETREDRAW, WPARAM(1), LPARAM(0));
+                let _ = InvalidateRect(Some(list), None, false);
+            }
+            // Apply visibility after WM_SETREDRAW(TRUE), which adds WS_VISIBLE.
+            let _ = ShowWindow(list, if next.is_empty() { SW_HIDE } else { SW_SHOWNA });
+            if let Ok(empty) = GetDlgItem(Some(parent), 305) {
+                let _ = ShowWindow(empty, if next.is_empty() { SW_SHOWNA } else { SW_HIDE });
+            }
             drop(model);
-            send(list, WM_SETREDRAW, WPARAM(1), LPARAM(0));
-            let _ = InvalidateRect(Some(list), None, false);
             SetWindowLongPtrW(parent, GWLP_USERDATA, self.callback as isize);
         }
         self.rows = self.model.lock().unwrap().peers.keys().copied().collect();
@@ -1783,31 +1839,49 @@ impl App {
         }
         let model = self.model.lock().unwrap();
         let selected = send(dialog.list, LB_GETCURSEL, WPARAM(0), LPARAM(0)).0;
-        send(dialog.list, WM_SETREDRAW, WPARAM(0), LPARAM(0));
-        send(dialog.list, LB_RESETCONTENT, WPARAM(0), LPARAM(0));
-        for peer in &model.discovered {
-            send(
-                dialog.list,
-                LB_ADDSTRING,
-                WPARAM(0),
-                LPARAM(wide(&peer.name).as_ptr() as isize),
-            );
+        let count = send(dialog.list, LB_GETCOUNT, WPARAM(0), LPARAM(0)).0;
+        let changed = count != model.discovered.len() as isize
+            || model.discovered.iter().enumerate().any(|(row, peer)| {
+                let length = send(dialog.list, LB_GETTEXTLEN, WPARAM(row), LPARAM(0)).0;
+                if length < 0 {
+                    return true;
+                }
+                let mut text = vec![0; length as usize + 1];
+                send(
+                    dialog.list,
+                    LB_GETTEXT,
+                    WPARAM(row),
+                    LPARAM(text.as_mut_ptr() as isize),
+                );
+                text != wide(&peer.name)
+            });
+        if changed {
+            send(dialog.list, WM_SETREDRAW, WPARAM(0), LPARAM(0));
+            send(dialog.list, LB_RESETCONTENT, WPARAM(0), LPARAM(0));
+            for peer in &model.discovered {
+                send(
+                    dialog.list,
+                    LB_ADDSTRING,
+                    WPARAM(0),
+                    LPARAM(wide(&peer.name).as_ptr() as isize),
+                );
+            }
+            if selected >= 0 {
+                send(
+                    dialog.list,
+                    LB_SETCURSEL,
+                    WPARAM(selected as usize),
+                    LPARAM(0),
+                );
+            }
+            send(dialog.list, WM_SETREDRAW, WPARAM(1), LPARAM(0));
+            let _ = InvalidateRect(Some(dialog.list), None, true);
         }
-        if selected >= 0 {
-            send(
-                dialog.list,
-                LB_SETCURSEL,
-                WPARAM(selected as usize),
-                LPARAM(0),
-            );
-        }
-        send(dialog.list, WM_SETREDRAW, WPARAM(1), LPARAM(0));
-        let _ = InvalidateRect(Some(dialog.list), None, true);
-        let _ = EnableWindow(
+        enable_if_changed(
             GetDlgItem(Some(dialog.hwnd), SEARCH as i32).unwrap_or_default(),
             !model.scanning,
         );
-        let _ = EnableWindow(
+        enable_if_changed(
             GetDlgItem(Some(dialog.hwnd), CONNECT as i32).unwrap_or_default(),
             selected >= 0 && (selected as usize) < model.discovered.len(),
         );
@@ -1824,9 +1898,9 @@ impl App {
                 model.discovered.len()
             )
         };
-        let _ = SetWindowTextW(
+        set_text_if_changed(
             GetDlgItem(Some(dialog.hwnd), 301).unwrap_or_default(),
-            PCWSTR(wide(&status).as_ptr()),
+            &status,
         );
     }
 
@@ -2393,4 +2467,82 @@ unsafe fn battery_icon(instance: HINSTANCE) -> windows::core::Result<HICON> {
         mask.as_ptr(),
         pixels.as_ptr(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct TestWindow(HWND);
+    impl Drop for TestWindow {
+        fn drop(&mut self) {
+            unsafe {
+                let _ = DestroyWindow(self.0);
+            }
+        }
+    }
+
+    #[test]
+    fn text_updates_leave_unchanged_and_hidden_controls_alone() {
+        unsafe {
+            // An offscreen parent lets this exercise real native controls without
+            // opening a window or relying on BLE, timers, or screenshot timing.
+            let parent = TestWindow(
+                CreateWindowExW(
+                    WINDOW_EX_STYLE::default(),
+                    w!("STATIC"),
+                    w!(""),
+                    WS_OVERLAPPED,
+                    0,
+                    0,
+                    200,
+                    100,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap(),
+            );
+            let label = TestWindow(
+                CreateWindowExW(
+                    WINDOW_EX_STYLE::default(),
+                    w!("STATIC"),
+                    w!("연결됨"),
+                    WS_CHILD | WS_VISIBLE,
+                    0,
+                    0,
+                    180,
+                    30,
+                    Some(parent.0),
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap(),
+            );
+            let _ = ValidateRect(Some(label.0), None);
+            set_text_if_changed(label.0, "연결됨");
+            assert!(!GetUpdateRect(label.0, None, false).as_bool());
+            assert!(!GetUpdateRect(parent.0, None, false).as_bool());
+
+            set_text_if_changed(label.0, "연결 중");
+            let mut text = [0u16; 32];
+            let length = GetWindowTextW(label.0, &mut text) as usize;
+            assert_eq!(String::from_utf16_lossy(&text[..length]), "연결 중");
+            assert!(!GetUpdateRect(parent.0, None, false).as_bool());
+            let _ = ValidateRect(Some(label.0), None);
+            set_text_if_changed(label.0, "연결 중");
+            assert!(!GetUpdateRect(label.0, None, false).as_bool());
+
+            let _ = ShowWindow(label.0, SW_HIDE);
+            set_text_if_changed(label.0, "수신 전");
+            enable_if_changed(label.0, false);
+            assert_eq!(
+                GetWindowLongPtrW(label.0, GWL_STYLE) as u32 & WS_VISIBLE.0,
+                0
+            );
+            assert!(!IsWindowEnabled(label.0).as_bool());
+        }
+    }
 }
