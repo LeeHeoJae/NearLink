@@ -88,6 +88,8 @@ pub struct Theme {
     pub selected: COLORREF,
     pub on_selected: COLORREF,
     pub border: COLORREF,
+    /// Caution text for lost connections and old values; always paired with words.
+    pub warning: COLORREF,
     pub brush: HBRUSH,
     pub surface_brush: HBRUSH,
 }
@@ -130,6 +132,7 @@ impl Theme {
             selected,
             on_selected,
             border,
+            warning,
         ) = if contrast {
             // Follow the actual contrast palette. A forced preview uses a deterministic test palette.
             if forced.as_deref() == Some("contrast") && (hc.dwFlags & HCF_HIGHCONTRASTON).0 == 0 {
@@ -143,6 +146,7 @@ impl Theme {
                     rgb(255, 255, 0),
                     rgb(0, 0, 0),
                     rgb(255, 255, 255),
+                    rgb(255, 255, 255),
                 )
             } else {
                 (
@@ -154,6 +158,7 @@ impl Theme {
                     COLORREF(GetSysColor(COLOR_HIGHLIGHTTEXT)),
                     COLORREF(GetSysColor(COLOR_HIGHLIGHT)),
                     COLORREF(GetSysColor(COLOR_HIGHLIGHTTEXT)),
+                    COLORREF(GetSysColor(COLOR_WINDOWTEXT)),
                     COLORREF(GetSysColor(COLOR_WINDOWTEXT)),
                 )
             }
@@ -168,6 +173,7 @@ impl Theme {
                 rgb(24, 52, 92),
                 rgb(243, 243, 246),
                 rgb(65, 65, 69),
+                rgb(252, 225, 0),
             )
         } else {
             (
@@ -180,6 +186,7 @@ impl Theme {
                 rgb(232, 240, 255),
                 rgb(23, 23, 27),
                 rgb(224, 224, 230),
+                rgb(157, 93, 0),
             )
         };
         Self {
@@ -194,6 +201,7 @@ impl Theme {
             selected,
             on_selected,
             border,
+            warning,
             brush: CreateSolidBrush(background),
             surface_brush: CreateSolidBrush(surface),
         }
@@ -240,6 +248,10 @@ pub unsafe fn text(
     mut rect: RECT,
     flags: DRAW_TEXT_FORMAT,
 ) {
+    // An empty slice would hand DrawText a dangling pointer.
+    if value.is_empty() {
+        return;
+    }
     let old = SelectObject(dc, font.into());
     SetTextColor(dc, color);
     SetBkMode(dc, TRANSPARENT);

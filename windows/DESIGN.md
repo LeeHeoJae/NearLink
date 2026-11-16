@@ -39,15 +39,17 @@ Connection, charging and stale data always have text equivalents.
 
 ## Typography
 
-Segoe UI: 14 body, 16 semibold device name, 23 semibold battery, 24 semibold page heading.
+Segoe UI on the Fluent ramp: 12 caption, 14 body, 14 semibold device name, 20 semibold
+battery, 24 semibold page heading. Battery glyphs use Segoe Fluent Icons (MDL2 Assets fallback).
 Scale layout and fonts with per-monitor DPI and Windows Accessibility TextScaleFactor.
 Do not replace OS title bars or their accessible minimize/maximize/close controls.
 
 ## Layout
 
 Main window starts at 720 by 760 logical units; minimum 620 by 520.
-The device list fills the available height. Each 124-unit row presents name, battery /
-charging, connection and last reception in that order. Scroll vertically for more devices.
+The device list fills the available height. Each 68-unit row follows the Windows Settings
+device card: battery glyph, name over a compact status line (connection · freshness · age),
+and the reading with a charging label on the right. Scroll vertically for more devices.
 Margins: 24 main content, 16 list. No table header or horizontal scrolling.
 A selected device has explicit actions below the list plus a native context menu.
 Tray left click opens a 430-unit quick window, capped to the monitor work area, with
@@ -79,6 +81,8 @@ never starts BLE, saves fixtures, changes startup or raises battery notification
 Preserve NearLink blue, concise Korean copy and Android information order.
 Use native system menus and controls, system contrast colors and visible keyboard focus.
 Avoid giant metrics, decorative icons, nested cards, excessive rounding and color-only states.
+The battery glyph is informational; lost connections and old values use caution text color
+(#9D5D00 light, #FCE100 dark) next to their words, and muted readings dim to secondary.
 
 ## Visual Contract
 

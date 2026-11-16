@@ -55,6 +55,20 @@ const STARTUP: usize = 213;
 // STATIC control's documented SS_CENTER style (winuser.h).
 const SS_CENTER: u32 = 1;
 
+/// Logical height of a device row: name and status lines beside the battery glyph.
+const ROW_HEIGHT: i32 = 68;
+
+/// Whether GDI matched the requested face instead of substituting another font.
+unsafe fn font_has_face(font: HFONT, face: &str) -> bool {
+    let dc = GetDC(None);
+    let old = SelectObject(dc, font.into());
+    let mut name = [0u16; 64];
+    let length = GetTextFaceW(dc, Some(&mut name));
+    SelectObject(dc, old);
+    ReleaseDC(None, dc);
+    length > 0 && String::from_utf16_lossy(&name[..(length as usize).saturating_sub(1)]) == face
+}
+
 fn wide(value: &str) -> Vec<u16> {
     value.encode_utf16().chain(Some(0)).collect()
 }
@@ -163,6 +177,8 @@ struct App {
     heading: HFONT,
     name_font: HFONT,
     battery_font: HFONT,
+    caption_font: HFONT,
+    icon_font: HFONT,
     row_images: HIMAGELIST,
     theme: Theme,
     text_scale: u32,
@@ -268,6 +284,8 @@ pub fn run() -> Result<(), String> {
             heading: HFONT::default(),
             name_font: HFONT::default(),
             battery_font: HFONT::default(),
+            caption_font: HFONT::default(),
+            icon_font: HFONT::default(),
             row_images: HIMAGELIST::default(),
             theme: Theme::load(),
             text_scale: theme::text_scale(),
@@ -348,6 +366,8 @@ pub fn run() -> Result<(), String> {
             state.heading,
             state.name_font,
             state.battery_font,
+            state.caption_font,
+            state.icon_font,
         ] {
             if !font.is_invalid() {
                 let _ = DeleteObject(font.into());
@@ -696,7 +716,7 @@ impl App {
             LPARAM(&column as *const _ as isize),
         );
         if self.row_images.is_invalid() {
-            self.row_images = ImageList_Create(1, self.s(124), ILC_COLOR32, 1, 1);
+            self.row_images = ImageList_Create(1, self.s(ROW_HEIGHT), ILC_COLOR32, 1, 1);
         }
         send(
             list,
@@ -721,7 +741,7 @@ impl App {
 
     unsafe fn resize_rows(&mut self) {
         let old = self.row_images;
-        self.row_images = ImageList_Create(1, self.s(124), ILC_COLOR32, 1, 1);
+        self.row_images = ImageList_Create(1, self.s(ROW_HEIGHT), ILC_COLOR32, 1, 1);
         for list in [self.list, self.quick_list] {
             if list.is_invalid() {
                 continue;
@@ -794,7 +814,7 @@ impl App {
             self.button(self.quick, "상세 설정(&O)", OPEN_MAIN);
         }
         self.theme.window(self.quick);
-        let count = self.model.lock().unwrap().peers.len().clamp(1, 4) as i32;
+        let count = self.model.lock().unwrap().peers.len().clamp(1, 6) as i32;
         let mut point = POINT::default();
         let _ = GetCursorPos(&mut point);
         let monitor = MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST);
@@ -805,7 +825,7 @@ impl App {
         let _ = GetMonitorInfoW(monitor, &mut info);
         let work = info.rcWork;
         let width = self.s(430).min(work.right - work.left);
-        let height = self.s(count * 124 + 150).min(work.bottom - work.top);
+        let height = self.s(count * ROW_HEIGHT + 168).min(work.bottom - work.top);
         let x = (point.x - width / 2).clamp(work.left, (work.right - width).max(work.left));
         let y = (point.y - height).clamp(work.top, (work.bottom - height).max(work.top));
         let _ = SetWindowPos(
@@ -934,45 +954,74 @@ impl App {
             bottom: row.top + self.s(y + h),
         };
         let width = (row.right - row.left) * 9600 / (self.dpi * self.text_scale) as i32;
+        // Windows Settings device-card order: glyph, name over status, reading on the right.
+        let contrast_selected = selected && self.theme.contrast;
+        let reading = if contrast_selected {
+            foreground
+        } else if peer.muted() {
+            secondary
+        } else {
+            accent
+        };
+        let status = if contrast_selected {
+            foreground
+        } else if peer.needs_attention() {
+            self.theme.warning
+        } else {
+            secondary
+        };
+        let right = 104;
+        let text_width = (width - 56 - right - 24).max(40);
+        theme::text(
+            dc,
+            self.icon_font,
+            reading,
+            &peer.battery_glyph().to_string(),
+            area(12, 15, 32, 32),
+            DT_SINGLELINE | DT_CENTER | DT_VCENTER,
+        );
         theme::text(
             dc,
             self.name_font,
             foreground,
             peer.saved.label(),
-            area(16, 8, width - 32, 24),
+            area(56, 10, text_width, 22),
             DT_SINGLELINE | DT_END_ELLIPSIS,
         );
         theme::text(
             dc,
-            self.battery_font,
-            accent,
+            self.font,
+            status,
+            &peer.row_status(),
+            // Without a charging badge the status may run under the reading column.
+            area(
+                56,
+                33,
+                if peer.charge_badge().is_empty() {
+                    (width - 56 - 16).max(40)
+                } else {
+                    text_width
+                },
+                21,
+            ),
+            DT_SINGLELINE | DT_END_ELLIPSIS,
+        );
+        let known = peer.level.is_some();
+        theme::text(
+            dc,
+            if known { self.battery_font } else { self.font },
+            reading,
             &peer.battery_text(),
-            area(16, 34, 100, 32),
-            DT_SINGLELINE,
+            area(width - right - 16, if known { 5 } else { 10 }, right, 28),
+            DT_SINGLELINE | DT_RIGHT | if known { DT_TOP } else { DT_VCENTER },
         );
         theme::text(
             dc,
-            self.font,
-            foreground,
-            peer.charge_text(),
-            area(120, 42, width - 140, 23),
-            DT_SINGLELINE | DT_END_ELLIPSIS,
-        );
-        theme::text(
-            dc,
-            self.font,
-            foreground,
-            &peer.status_text(),
-            area(16, 72, width - 32, 22),
-            DT_SINGLELINE | DT_END_ELLIPSIS,
-        );
-        theme::text(
-            dc,
-            self.font,
-            secondary,
-            &format!("마지막 수신 · {}", peer.age_text()),
-            area(16, 96, width - 32, 22),
-            DT_SINGLELINE | DT_END_ELLIPSIS,
+            self.caption_font,
+            if contrast_selected { foreground } else { secondary },
+            peer.charge_badge(),
+            area(width - right - 16, 35, right, 18),
+            DT_SINGLELINE | DT_RIGHT | DT_END_ELLIPSIS,
         );
         if selected || self.theme.contrast {
             let pen = CreatePen(
@@ -1189,9 +1238,16 @@ impl App {
         );
     }
     unsafe fn update_font(&mut self) {
-        let old = [self.font, self.heading, self.name_font, self.battery_font];
+        let old = [
+            self.font,
+            self.heading,
+            self.name_font,
+            self.battery_font,
+            self.caption_font,
+            self.icon_font,
+        ];
         let factor = (self.dpi * self.text_scale) as i32;
-        let make = |size: i32, weight| {
+        let make_face = |size: i32, weight, face: PCWSTR| {
             CreateFontW(
                 -(size * factor + 4800) / 9600,
                 0,
@@ -1206,13 +1262,21 @@ impl App {
                 CLIP_DEFAULT_PRECIS,
                 CLEARTYPE_QUALITY,
                 DEFAULT_PITCH.0 as u32,
-                w!("Segoe UI"),
+                face,
             )
         };
+        let make = |size: i32, weight| make_face(size, weight, w!("Segoe UI"));
         self.font = make(14, FW_NORMAL.0 as i32);
         self.heading = make(24, FW_SEMIBOLD.0 as i32);
-        self.name_font = make(16, FW_SEMIBOLD.0 as i32);
-        self.battery_font = make(23, FW_SEMIBOLD.0 as i32);
+        self.name_font = make(14, FW_SEMIBOLD.0 as i32);
+        self.battery_font = make(20, FW_SEMIBOLD.0 as i32);
+        self.caption_font = make(12, FW_NORMAL.0 as i32);
+        // Windows 11 ships Segoe Fluent Icons; MDL2 Assets has the same battery code points.
+        self.icon_font = make_face(24, FW_NORMAL.0 as i32, w!("Segoe Fluent Icons"));
+        if !font_has_face(self.icon_font, "Segoe Fluent Icons") {
+            let _ = DeleteObject(self.icon_font.into());
+            self.icon_font = make_face(24, FW_NORMAL.0 as i32, w!("Segoe MDL2 Assets"));
+        }
         for parent in [
             self.main,
             self.quick,

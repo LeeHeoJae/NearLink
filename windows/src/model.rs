@@ -133,6 +133,58 @@ impl Peer {
             state.into()
         }
     }
+    /// Compact second line of a device row: connection, then how current the value is.
+    pub fn row_status(&self) -> String {
+        let state = match self.state {
+            State::Retrying => "연결 끊김 · 재연결 대기",
+            State::Stopped => "수신 중지됨",
+            _ => self.state.text(),
+        };
+        let age = self.age_text();
+        if self.updated.is_none() {
+            format!("{state} · {age}")
+        } else if self.stale() {
+            format!("{state} · 오래된 값 {age}")
+        } else if self.state != State::Connected {
+            format!("{state} · 마지막 값 {age}")
+        } else {
+            format!("{state} · {age}")
+        }
+    }
+
+    /// The value may not reflect the device now; rows mute the reading and say why in text.
+    pub fn muted(&self) -> bool {
+        self.updated.is_none() || self.stale() || self.state != State::Connected
+    }
+
+    /// Lost connection or old data, highlighted next to its text.
+    pub fn needs_attention(&self) -> bool {
+        self.stale() || self.state == State::Retrying
+    }
+
+    /// Segoe Fluent Icons / MDL2 Assets mobile battery glyph in 10% steps.
+    pub fn battery_glyph(&self) -> char {
+        let charging = self.charging == Some(true);
+        let code = match self.level {
+            None if charging => 0xEB17,
+            None => 0xE996,
+            Some(level) => {
+                let step = (u32::from(level.min(100)) + 5) / 10;
+                (if charging { 0xEBAB } else { 0xEBA0 }) + step
+            }
+        };
+        char::from_u32(code).unwrap_or('?')
+    }
+
+    /// Short visible charging label; "not charging" is left to the accessible text.
+    pub fn charge_badge(&self) -> &'static str {
+        match (self.charging, self.plugged) {
+            (Some(true), _) => "충전 중",
+            (Some(false), Some(true)) => "전원 연결됨",
+            _ => "",
+        }
+    }
+
     pub fn accessible_text(&self) -> String {
         format!(
             "{} · {} · {} · {} · 마지막 수신 {}",
@@ -316,6 +368,41 @@ mod tests {
         assert!(peer.status_text().contains("마지막 값"));
         peer.state = State::Stopped;
         assert!(peer.accessible_text().contains("수신 중지됨"));
+    }
+    #[test]
+    fn row_status_is_compact_but_keeps_freshness_explicit() {
+        let mut peer = Peer::new(SavedPeer::new(1, "태블릿".into(), false));
+        assert_eq!(peer.row_status(), "연결 중 · 수신 전");
+        assert!(peer.muted());
+        peer.level = Some(73);
+        peer.state = State::Connected;
+        peer.updated = Some(SystemTime::now());
+        assert!(peer.row_status().starts_with("연결됨 · "));
+        assert!(!peer.muted() && !peer.needs_attention());
+        peer.updated = Some(SystemTime::now() - std::time::Duration::from_secs(901));
+        assert!(peer.row_status().contains("오래된 값"));
+        assert!(peer.needs_attention());
+        peer.state = State::Retrying;
+        peer.updated = Some(SystemTime::now());
+        assert!(peer.row_status().contains("연결 끊김"));
+        assert!(peer.row_status().contains("마지막 값"));
+        assert!(peer.muted() && peer.needs_attention());
+    }
+    #[test]
+    fn battery_glyph_follows_level_and_charging() {
+        let mut peer = Peer::new(SavedPeer::new(1, "태블릿".into(), false));
+        assert_eq!(peer.battery_glyph(), '\u{E996}');
+        peer.level = Some(0);
+        assert_eq!(peer.battery_glyph(), '\u{EBA0}');
+        peer.level = Some(73);
+        assert_eq!(peer.battery_glyph(), '\u{EBA7}');
+        peer.level = Some(100);
+        assert_eq!(peer.battery_glyph(), '\u{EBAA}');
+        peer.charging = Some(true);
+        assert_eq!(peer.battery_glyph(), '\u{EBB5}');
+        assert_eq!(peer.charge_badge(), "충전 중");
+        peer.charging = Some(false);
+        assert_eq!(peer.charge_badge(), "");
     }
     #[test]
     fn recent_session_check_keeps_an_unchanged_reading_current() {
