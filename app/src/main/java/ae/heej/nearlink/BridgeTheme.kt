@@ -17,8 +17,17 @@ internal object BridgeDesign {
     val gap = 16.dp
     val groupShape = RoundedCornerShape(26.dp)
     val controlShape = RoundedCornerShape(24.dp)
-    val maxWidth = 1120.dp
-    val expandedWidth = 840.dp
+    /** Upper bound for the whole page on very wide windows. */
+    val maxWidth = 1000.dp
+    /** From this width the managed screen splits into a control panel and a device list. */
+    val expandedWidth = 720.dp
+    /** Readable single-column width for medium windows (portrait tablets, split screen). */
+    val contentWidth = 760.dp
+    val sidePanelWidth = 320.dp
+    /** Device cards go two-up when the list is at least this wide. */
+    val gridWidth = 640.dp
+    /** Device cards switch to the horizontal layout (battery beside the name) at this width. */
+    val wideCardWidth = 440.dp
 }
 
 private val LightColors = lightColorScheme(
