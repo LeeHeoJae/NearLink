@@ -133,6 +133,22 @@ impl Peer {
             state.into()
         }
     }
+    /// One short tray tooltip line: reading, plus only what is unusual about it.
+    pub fn tip_text(&self) -> String {
+        let mut text = format!("{} {}", self.saved.label(), self.battery_text());
+        let note = match (self.state, self.charge_badge()) {
+            (State::Retrying, _) => "연결 끊김",
+            (State::Stopped, _) => "수신 중지",
+            _ if self.stale() => "오래된 값",
+            (_, badge) => badge,
+        };
+        if !note.is_empty() {
+            text.push_str(" · ");
+            text.push_str(note);
+        }
+        text
+    }
+
     /// Compact second line of a device row: connection, then how current the value is.
     pub fn row_status(&self) -> String {
         let state = match self.state {

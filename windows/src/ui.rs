@@ -783,7 +783,7 @@ impl App {
                 } else {
                     w!("NearLink")
                 },
-                WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME | WS_CLIPCHILDREN,
+                WS_POPUP | WS_CLIPCHILDREN,
                 0,
                 0,
                 self.s(430),
@@ -797,17 +797,6 @@ impl App {
             self.dpi = GetDpiForWindow(self.quick);
             self.update_font();
             self.resize_rows();
-            self.control(
-                self.quick,
-                w!("STATIC"),
-                if self.preview {
-                    "기기 배터리 · 미리 보기"
-                } else {
-                    "기기 배터리"
-                },
-                WINDOW_STYLE::default(),
-                300,
-            );
             self.quick_list = self.device_list(self.quick);
             self.control(self.quick,w!("STATIC"),"연결한 기기가 없습니다.\r\nAndroid NearLink에서 연결 준비를 누른 뒤 기기를 추가하세요.",WINDOW_STYLE(SS_CENTER),305);
             self.button(self.quick, "기기 추가(&A)", ADD);
@@ -825,7 +814,7 @@ impl App {
         let _ = GetMonitorInfoW(monitor, &mut info);
         let work = info.rcWork;
         let width = self.s(430).min(work.right - work.left);
-        let height = self.s(count * ROW_HEIGHT + 168).min(work.bottom - work.top);
+        let height = self.s(count * ROW_HEIGHT + 80).min(work.bottom - work.top);
         let x = (point.x - width / 2).clamp(work.left, (work.right - width).max(work.left));
         let y = (point.y - height).clamp(work.top, (work.bottom - height).max(work.top));
         let _ = SetWindowPos(
@@ -931,7 +920,8 @@ impl App {
         } else {
             self.theme.surface
         };
-        theme::fill(dc, &row, background);
+        let radius = if self.theme.contrast { 0 } else { self.s(8) };
+        theme::round(dc, &row, background, None, radius);
         let foreground = if selected {
             self.theme.on_selected
         } else {
@@ -1024,17 +1014,18 @@ impl App {
             DT_SINGLELINE | DT_RIGHT | DT_END_ELLIPSIS,
         );
         if selected || self.theme.contrast {
-            let pen = CreatePen(
-                PS_SOLID,
-                1,
-                if selected { accent } else { self.theme.border },
-            );
-            let old = SelectObject(dc, pen.into());
+            let edge = if selected { accent } else { self.theme.border };
+            let hollow = CreatePen(PS_SOLID, 1, edge);
+            let old = SelectObject(dc, hollow.into());
             let brush = SelectObject(dc, GetStockObject(NULL_BRUSH));
-            let _ = Rectangle(dc, row.left, row.top, row.right, row.bottom);
+            if radius > 0 {
+                let _ = RoundRect(dc, row.left, row.top, row.right, row.bottom, radius * 2, radius * 2);
+            } else {
+                let _ = Rectangle(dc, row.left, row.top, row.right, row.bottom);
+            }
             SelectObject(dc, brush);
             SelectObject(dc, old);
-            let _ = DeleteObject(pen.into());
+            let _ = DeleteObject(hollow.into());
         }
         if native_state & LVIS_FOCUSED.0 != 0 && GetFocus() == draw.nmcd.hdr.hwndFrom {
             let mut focus = row;
@@ -1080,7 +1071,8 @@ impl App {
                 bottom: rect.top + self.s(18),
                 ..rect
             };
-            theme::fill(
+            let radius = if self.theme.contrast { 0 } else { self.s(4) };
+            theme::round(
                 dc,
                 &box_rect,
                 if checked(hwnd) {
@@ -1088,8 +1080,13 @@ impl App {
                 } else {
                     self.theme.surface
                 },
+                Some(if checked(hwnd) {
+                    self.theme.accent
+                } else {
+                    self.theme.secondary
+                }),
+                radius,
             );
-            let _ = FrameRect(dc, &box_rect, self.theme.surface_brush);
             if checked(hwnd) {
                 // Draw a check with the same GDI stroke in every theme.
                 let pen = CreatePen(PS_SOLID, self.s(2), self.theme.on_accent);
@@ -1099,33 +1096,13 @@ impl App {
                 let _ = LineTo(dc, rect.left + self.s(15), rect.top + self.s(5));
                 SelectObject(dc, old);
                 let _ = DeleteObject(pen.into());
-            } else {
-                let pen = CreatePen(PS_SOLID, 1, self.theme.secondary);
-                let old = SelectObject(dc, pen.into());
-                let brush = SelectObject(dc, GetStockObject(NULL_BRUSH));
-                let _ = Rectangle(
-                    dc,
-                    box_rect.left,
-                    box_rect.top,
-                    box_rect.right,
-                    box_rect.bottom,
-                );
-                SelectObject(dc, brush);
-                SelectObject(dc, old);
-                let _ = DeleteObject(pen.into());
             }
             rect.left += self.s(26);
         } else {
-            theme::fill(dc, &rect, background);
-            if !primary || disabled {
-                let pen = CreatePen(PS_SOLID, 1, self.theme.border);
-                let old = SelectObject(dc, pen.into());
-                let brush = SelectObject(dc, GetStockObject(NULL_BRUSH));
-                let _ = Rectangle(dc, rect.left, rect.top, rect.right, rect.bottom);
-                SelectObject(dc, brush);
-                SelectObject(dc, old);
-                let _ = DeleteObject(pen.into());
-            }
+            theme::fill(dc, &rect, self.theme.background);
+            let radius = if self.theme.contrast { 0 } else { self.s(4) };
+            let border = (!primary || disabled).then_some(self.theme.border);
+            theme::round(dc, &rect, background, border, radius);
         }
         // Let DrawText render the native mnemonic underline (including Alt navigation).
         let mut label = wide(&control_text(hwnd));
@@ -1412,17 +1389,16 @@ impl App {
             let height = bounds.bottom * 9600 / (self.dpi * self.text_scale) as i32;
             let item = |id| GetDlgItem(Some(hwnd), id).unwrap_or_default();
             if quick {
-                self.place(item(300), 20, 14, width - 40, 24);
-                self.place(list, 12, 46, width - 24, (height - 108).max(80));
+                self.place(list, 8, 8, width - 16, (height - 64).max(80));
                 self.place(
                     item(305),
                     24,
-                    46 + (height - 108).max(80) / 2 - 36,
+                    8 + (height - 64).max(80) / 2 - 36,
                     width - 48,
                     72,
                 );
-                self.place(item(ADD as i32), 16, height - 48, 110, 32);
-                self.place(item(OPEN_MAIN as i32), width - 164, height - 48, 148, 32);
+                self.place(item(ADD as i32), 12, height - 48, 110, 36);
+                self.place(item(OPEN_MAIN as i32), width - 122, height - 48, 110, 36);
             } else {
                 let compact = height < 520;
                 let menu_actions = compact && height < 400;
@@ -2273,20 +2249,7 @@ impl App {
         peers.sort_by_key(|peer| Some(peer.saved.address) != model.settings.tray_peer);
         let labels: Vec<_> = peers
             .into_iter()
-            .map(|peer| {
-                format!(
-                    "{}{} {} · {} · {}",
-                    if Some(peer.saved.address) == model.settings.tray_peer {
-                        "대표: "
-                    } else {
-                        ""
-                    },
-                    peer.saved.label().chars().take(18).collect::<String>(),
-                    peer.battery_text(),
-                    peer.charge_text(),
-                    peer.status_text()
-                )
-            })
+            .map(|peer| peer.tip_text())
             .collect();
         let mut data = self.tray_data();
         data.uFlags = NIF_TIP | NIF_SHOWTIP;

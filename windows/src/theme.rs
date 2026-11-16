@@ -217,7 +217,7 @@ impl Theme {
         let corner = if self.contrast {
             DWMWCP_DONOTROUND
         } else {
-            DWMWCP_ROUNDSMALL
+            DWMWCP_ROUND
         };
         let _ = DwmSetWindowAttribute(
             hwnd,
@@ -238,6 +238,22 @@ impl Drop for Theme {
 pub unsafe fn fill(dc: HDC, rect: &RECT, color: COLORREF) {
     let brush = CreateSolidBrush(color);
     FillRect(dc, rect, brush);
+    let _ = DeleteObject(brush.into());
+}
+/// Windows 11 style rounded surface; a zero radius (high contrast) stays square.
+pub unsafe fn round(dc: HDC, rect: &RECT, color: COLORREF, border: Option<COLORREF>, radius: i32) {
+    let brush = CreateSolidBrush(color);
+    let pen = CreatePen(PS_SOLID, 1, border.unwrap_or(color));
+    let old_brush = SelectObject(dc, brush.into());
+    let old_pen = SelectObject(dc, pen.into());
+    if radius > 0 {
+        let _ = RoundRect(dc, rect.left, rect.top, rect.right, rect.bottom, radius * 2, radius * 2);
+    } else {
+        let _ = Rectangle(dc, rect.left, rect.top, rect.right, rect.bottom);
+    }
+    SelectObject(dc, old_pen);
+    SelectObject(dc, old_brush);
+    let _ = DeleteObject(pen.into());
     let _ = DeleteObject(brush.into());
 }
 pub unsafe fn text(
