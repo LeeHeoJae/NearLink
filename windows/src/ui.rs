@@ -3,7 +3,7 @@
 use crate::{
     ble::{Engine, Wake},
     config::{self, SavedPeer},
-    model::{Model, Peer, Shared, State},
+    model::{Model, Peer, Shared, State, fit_lines, notice_balloon},
     theme::{self, Theme},
     tray::Artwork,
 };
@@ -119,6 +119,25 @@ pub fn fatal(message: &str) {
             MB_OK | MB_ICONERROR,
         );
     }
+}
+
+/// Discovery rows say when a device is already on this PC's list, so it is not added twice.
+fn discovered_label(model: &Model, peer: &crate::model::Discovered) -> String {
+    match model.peers.get(&peer.address) {
+        Some(saved) if saved.saved.enabled => format!("{} · 이미 등록됨", peer.name),
+        Some(_) => format!("{} · 등록됨, 수신 중지", peer.name),
+        None => peer.name.clone(),
+    }
+}
+
+/// Recoverable input problems stay attached to the dialog the user is working in.
+unsafe fn warn(owner: HWND, message: &str) {
+    MessageBoxW(
+        Some(owner),
+        PCWSTR(wide(message).as_ptr()),
+        w!("NearLink"),
+        MB_OK | MB_ICONWARNING,
+    );
 }
 
 enum Kind {
@@ -1458,6 +1477,7 @@ impl App {
         }
         let detail = peer.map(|peer| {
             if peer.stale() { "15분 이상 갱신되지 않은 값입니다. 배터리가 변하지 않으면 수신 시각이 오래될 수 있습니다.".into() }
+            else if peer.confirmed_unchanged() { "배터리 변화가 없어 수신 시각은 오래됐지만, 최근 연결 확인에 성공해 현재 값입니다.".into() }
             else if !peer.detail.is_empty() { peer.detail.clone() }
             else if peer.state != State::Connected && peer.updated.is_some() { "마지막으로 받은 잔량입니다. 현재 값과 다를 수 있습니다.".into() }
             else { "배터리 값이 바뀌면 자동으로 갱신합니다. 마지막 수신 시각은 배터리 데이터 수신 기준입니다.".into() }
@@ -1853,7 +1873,7 @@ impl App {
                     WPARAM(row),
                     LPARAM(text.as_mut_ptr() as isize),
                 );
-                text != wide(&peer.name)
+                text != wide(&discovered_label(&model, peer))
             });
         if changed {
             send(dialog.list, WM_SETREDRAW, WPARAM(0), LPARAM(0));
@@ -1863,7 +1883,7 @@ impl App {
                     dialog.list,
                     LB_ADDSTRING,
                     WPARAM(0),
-                    LPARAM(wide(&peer.name).as_ptr() as isize),
+                    LPARAM(wide(&discovered_label(&model, peer)).as_ptr() as isize),
                 );
             }
             if selected >= 0 {
@@ -1929,7 +1949,10 @@ impl App {
             .any(|peer| peer.address == candidate.address)
         {
             if settings.peers.len() >= 16 {
-                fatal("최대 16대까지 등록할 수 있습니다. 사용하지 않는 기기를 먼저 제거하세요.");
+                warn(
+                    dialog.hwnd,
+                    "최대 16대까지 등록할 수 있습니다. 사용하지 않는 기기를 먼저 제거하세요.",
+                );
                 return;
             }
             settings.peers.push(SavedPeer::new(
@@ -1994,7 +2017,8 @@ impl App {
             Kind::Settings => {
                 let threshold = control_text(dialog.input).trim().parse::<u8>();
                 let Ok(threshold @ 1..=90) = threshold else {
-                    fatal("부족 알림 기준은 1~90 사이의 숫자를 입력하세요.");
+                    warn(dialog.hwnd, "부족 알림 기준은 1~90 사이의 숫자를 입력하세요.");
+                    let _ = SetFocus(Some(dialog.input));
                     return;
                 };
                 settings.notifications =
@@ -2185,7 +2209,6 @@ impl App {
         peers.sort_by_key(|peer| Some(peer.saved.address) != model.settings.tray_peer);
         let labels: Vec<_> = peers
             .into_iter()
-            .take(4)
             .map(|peer| {
                 format!(
                     "{}{} {} · {} · {}",
@@ -2203,33 +2226,30 @@ impl App {
             .collect();
         let mut data = self.tray_data();
         data.uFlags = NIF_TIP | NIF_SHOWTIP;
-        copy_wide(
-            &mut data.szTip,
-            &format!(
-                "NearLink{}\n{}",
-                if self.preview {
-                    " · 예시 데이터"
-                } else {
-                    ""
-                },
-                if labels.is_empty() {
-                    "연결한 기기가 없습니다.".into()
-                } else {
-                    labels.join("\n")
-                }
-            ),
-        );
+        let header = if self.preview {
+            "NearLink · 예시 데이터"
+        } else {
+            "NearLink"
+        };
+        let lines = if labels.is_empty() {
+            vec!["연결한 기기가 없습니다.".to_string()]
+        } else {
+            labels
+        };
+        // szTip holds 127 characters; whole device lines are kept rather than cut off.
+        let tip = fit_lines(header, &lines, "대", data.szTip.len() - 1);
+        copy_wide(&mut data.szTip, &tip);
         let _ = Shell_NotifyIconW(NIM_MODIFY, &data);
     }
     unsafe fn notices(&self) {
         let notices: Vec<_> = self.model.lock().unwrap().notices.drain(..).collect();
         // A balloon may be suppressed by Windows notification settings or Focus Assist.
-        if let Some((title, message)) = notices.last() {
+        if let Some((title, message)) = notice_balloon(&notices) {
             let mut data = self.tray_data();
             data.uFlags = NIF_INFO;
             data.dwInfoFlags = NIIF_INFO | NIIF_RESPECT_QUIET_TIME;
-            copy_wide(&mut data.szInfoTitle, &format!("NearLink · {title}"));
-            copy_wide(&mut data.szInfo, message);
+            copy_wide(&mut data.szInfoTitle, &title);
+            copy_wide(&mut data.szInfo, &message);
             let _ = Shell_NotifyIconW(NIM_MODIFY, &data);
         }
     }
@@ -2290,7 +2310,7 @@ impl App {
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
         let _ = AppendMenuW(menu, MF_STRING, 1, w!("기기 배터리 열기(&O)"));
         let _ = AppendMenuW(menu, MF_STRING, 2, w!("기기 추가(&A)"));
-        let _ = AppendMenuW(menu, MF_STRING, 4, w!("설정(&O)"));
+        let _ = AppendMenuW(menu, MF_STRING, 4, w!("설정(&S)"));
         let _ = AppendMenuW(menu, MF_STRING, 3, w!("종료(&X)"));
         let mut point = POINT::default();
         let _ = GetCursorPos(&mut point);

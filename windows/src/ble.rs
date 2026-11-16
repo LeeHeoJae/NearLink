@@ -484,6 +484,8 @@ fn connection(
                 if protocol::ready(&read(&session, stop)?, request, Some(epoch)).is_none() {
                     return Err(failure("기기의 배터리 서비스가 다시 시작되었습니다."));
                 }
+                shared.lock().unwrap().verified(address);
+                wake();
                 deadline = Instant::now() + Duration::from_secs(30);
                 continue;
             }
