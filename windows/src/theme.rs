@@ -235,6 +235,15 @@ impl Drop for Theme {
         }
     }
 }
+pub unsafe fn cloak(hwnd: HWND, value: bool) {
+    let value = BOOL::from(value);
+    let _ = DwmSetWindowAttribute(
+        hwnd,
+        DWMWA_CLOAK,
+        (&value as *const BOOL).cast(),
+        size_of::<BOOL>() as u32,
+    );
+}
 pub unsafe fn fill(dc: HDC, rect: &RECT, color: COLORREF) {
     let brush = CreateSolidBrush(color);
     FillRect(dc, rect, brush);

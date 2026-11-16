@@ -3,7 +3,7 @@
 use crate::{
     ble::{Engine, Wake},
     config::{self, SavedPeer},
-    model::{Model, Peer, Shared, State, fit_lines, notice_balloon},
+    model::{Model, Peer, Shared, State, notice_balloon},
     theme::{self, Theme},
     tray::Artwork,
 };
@@ -172,6 +172,7 @@ struct App {
     list: HWND,
     quick: HWND,
     quick_list: HWND,
+    quick_closed: Option<std::time::Instant>,
     info: HWND,
     font: HFONT,
     heading: HFONT,
@@ -279,6 +280,7 @@ pub fn run() -> Result<(), String> {
             list: HWND::default(),
             quick: HWND::default(),
             quick_list: HWND::default(),
+            quick_closed: None,
             info: HWND::default(),
             font: HFONT::default(),
             heading: HFONT::default(),
@@ -416,6 +418,9 @@ unsafe extern "system" fn window_proc(
                 );
             }
         }
+        if !windows[1].is_invalid() {
+            theme::cloak(windows[1], false);
+        }
         return LRESULT(0);
     }
     // Win32 may synchronously reenter this procedure (control creation, dialogs, layout).
@@ -475,6 +480,7 @@ unsafe extern "system" fn window_proc(
         WM_ACTIVATE if hwnd == app.quick && wparam.0 & 0xffff == WA_INACTIVE as usize => {
             let _ = ShowWindow(app.quick, SW_HIDE);
             let _ = KillTimer(Some(app.quick), 1);
+            app.quick_closed = Some(std::time::Instant::now());
             LRESULT(0)
         }
         WAKE => {
@@ -488,7 +494,6 @@ unsafe extern "system" fn window_proc(
         }
         WM_TIMER if hwnd == app.host => {
             app.update_tray_icon();
-            app.update_tooltip();
             LRESULT(0)
         }
         WM_TIMER => {
@@ -589,7 +594,15 @@ unsafe extern "system" fn window_proc(
         TRAY => {
             let event = lparam.0 as u32 & 0xffff;
             if event == WM_LBUTTONUP || event == NIN_SELECT || event == (NIN_SELECT | 1) {
-                let _ = app.show_quick();
+                // Clicking the icon while the flyout is open first deactivates (closes) it;
+                // treat that click as a toggle instead of reopening it.
+                let just_closed = app
+                    .quick_closed
+                    .take()
+                    .is_some_and(|at| at.elapsed() < std::time::Duration::from_millis(700));
+                if !just_closed {
+                    let _ = app.show_quick();
+                }
             } else if event == WM_RBUTTONUP || event == WM_CONTEXTMENU {
                 app.tray_menu();
             }
@@ -830,6 +843,9 @@ impl App {
         self.refresh();
         let _ = PostMessageW(Some(self.host), REDRAW, WPARAM(0), LPARAM(0));
         SetTimer(Some(self.quick), 1, 10_000, None);
+        // App is borrowed here, so any paint during ShowWindow takes the default (light) path.
+        // Keep the window cloaked until the REDRAW handler repaints it with the app theme.
+        theme::cloak(self.quick, true);
         let _ = ShowWindow(self.quick, SW_SHOW);
         let _ = SetForegroundWindow(self.quick);
         let _ = SetFocus(Some(self.quick_list));
@@ -1540,7 +1556,6 @@ impl App {
         {
             self.model.lock().unwrap().message = error;
         }
-        self.update_tooltip();
         self.update_tray_icon();
         for (parent, list) in [(self.main, self.list), (self.quick, self.quick_list)] {
             if parent.is_invalid() {
@@ -2182,10 +2197,9 @@ impl App {
         let artwork = self.current_tray_artwork();
         let icon = artwork.create()?;
         let mut data = self.tray_data();
-        data.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP | NIF_SHOWTIP;
+        data.uFlags = NIF_ICON | NIF_MESSAGE;
         data.uCallbackMessage = TRAY;
         data.hIcon = icon;
-        copy_wide(&mut data.szTip, "NearLink · 기기 배터리");
         if !Shell_NotifyIconW(NIM_ADD, &data).as_bool() {
             let _ = DestroyIcon(icon);
             return Err(windows::core::Error::from_thread());
@@ -2198,7 +2212,6 @@ impl App {
         data.Anonymous.uVersion = NOTIFYICON_VERSION_4;
         let _ = Shell_NotifyIconW(NIM_SETVERSION, &data);
         self.tray_freshness_timer(artwork);
-        self.update_tooltip();
         Ok(())
     }
     unsafe fn current_tray_artwork(&self) -> Artwork {
@@ -2242,31 +2255,6 @@ impl App {
     }
     unsafe fn remove_tray(&self) {
         let _ = Shell_NotifyIconW(NIM_DELETE, &self.tray_data());
-    }
-    unsafe fn update_tooltip(&self) {
-        let model = self.model.lock().unwrap();
-        let mut peers: Vec<_> = model.peers.values().collect();
-        peers.sort_by_key(|peer| Some(peer.saved.address) != model.settings.tray_peer);
-        let labels: Vec<_> = peers
-            .into_iter()
-            .map(|peer| peer.tip_text())
-            .collect();
-        let mut data = self.tray_data();
-        data.uFlags = NIF_TIP | NIF_SHOWTIP;
-        let header = if self.preview {
-            "NearLink · 예시 데이터"
-        } else {
-            "NearLink"
-        };
-        let lines = if labels.is_empty() {
-            vec!["연결한 기기가 없습니다.".to_string()]
-        } else {
-            labels
-        };
-        // szTip holds 127 characters; whole device lines are kept rather than cut off.
-        let tip = fit_lines(header, &lines, "대", data.szTip.len() - 1);
-        copy_wide(&mut data.szTip, &tip);
-        let _ = Shell_NotifyIconW(NIM_MODIFY, &data);
     }
     unsafe fn notices(&self) {
         let notices: Vec<_> = self.model.lock().unwrap().notices.drain(..).collect();
