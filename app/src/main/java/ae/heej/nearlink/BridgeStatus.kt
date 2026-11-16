@@ -18,8 +18,24 @@ data class PeerSnapshot(
     val detail: String? = null,
     val lastReading: LastReading? = null,
     val sendOnly: Boolean = false,
-)
+    /** A name shown only in this app; Bluetooth and the Samsung widget keep the device name. */
+    val alias: String? = null,
+) {
+    val displayName: String get() = alias ?: peerName
+}
 data class StatusEvent(val timeMillis: Long, val description: String)
+
+/** Relative reception age for quick scanning; the exact time stays available alongside it. */
+internal fun relativeAge(now: Long, then: Long): String {
+    val minutes = (now - then).coerceAtLeast(0L) / 60_000L
+    return when {
+        minutes < 1 -> "방금"
+        minutes < 60 -> "${minutes}분 전"
+        minutes < 24 * 60 -> "${minutes / 60}시간 전"
+        minutes < 48 * 60 -> "어제"
+        else -> "${minutes / (24 * 60)}일 전"
+    }
+}
 data class BridgeSnapshot(
     val sendState: SendState = SendState.STOPPED,
     val sendDetail: String? = null,
@@ -39,7 +55,34 @@ internal fun BridgeSnapshot.preparationSecondsRemaining(now: Long): Long =
     if (preparationState == PreparationState.OPEN) ((preparationUntil - now).coerceAtLeast(0L) + 999L) / 1000L else 0L
 
 private fun BridgeSnapshot.withEvent(description: String): BridgeSnapshot =
-    copy(events = (events + StatusEvent(System.currentTimeMillis(), description)).takeLast(8))
+    copy(events = (events + StatusEvent(System.currentTimeMillis(), description)).takeLast(20))
+
+internal fun peerStateText(state: ReceiveState): String = when (state) {
+    ReceiveState.STOPPED -> "중지"
+    ReceiveState.SEARCHING -> "기기 검색"
+    ReceiveState.CONNECTING -> "연결 중"
+    ReceiveState.READING -> "배터리 확인 중"
+    ReceiveState.CONNECTED -> "연결됨"
+    ReceiveState.RETRYING -> "재연결 대기"
+    ReceiveState.WAITING_FOR_BLUETOOTH -> "블루투스 대기"
+    ReceiveState.ERROR -> "오류"
+    ReceiveState.SEND_ONLY -> "송신 전용"
+}
+
+/** Records each device's own state change so multi-device history stays attributable. */
+internal fun BridgeSnapshot.withPeerState(peerId: String, state: ReceiveState, detail: String?): BridgeSnapshot {
+    if (peerId !in peers && state == ReceiveState.STOPPED) return this
+    val old = peers[peerId] ?: PeerSnapshot(peerId)
+    val next = copy(peers = peers + (peerId to old.copy(receiveState = state, detail = detail)))
+    return if (old.receiveState == state) next else next.withEvent("${old.displayName} · ${peerStateText(state)}")
+}
+
+internal fun BridgeSnapshot.withoutPeer(peerId: String): BridgeSnapshot = copy(
+    peers = peers - peerId,
+    peerId = this.peerId?.takeIf { it != peerId },
+    peerName = if (this.peerId == peerId) null else peerName,
+    lastReading = lastReading?.takeIf { it.peerId != peerId },
+)
 
 internal fun BridgeSnapshot.acceptReading(reading: LastReading, connected: Boolean = true): BridgeSnapshot =
     if (peerId != reading.peerId || reading.level !in 0..100) this
@@ -97,7 +140,8 @@ object BridgeStatus {
                 else old
             mutable.update { it.copy(peers = it.peers + (address to PeerSnapshot(address, reading?.peerName ?: "선택한 기기", lastReading = reading,
                 detail = if (histories.getBoolean("$address.stop_unconfirmed", false)) BridgeSession.STOP_UNCONFIRMED else null,
-                sendOnly = BridgeSession.sendsOnlyTo(context, address)))) }
+                sendOnly = BridgeSession.sendsOnlyTo(context, address),
+                alias = histories.getString("$address.alias", null)))) }
             if (BridgeSession.contains(context, address) && BridgeSession.sendsOnlyTo(context, address)) {
                 sendOnly(context, address, histories.getString("$address.name", null) ?: "Windows PC")
             }
@@ -136,10 +180,32 @@ object BridgeStatus {
     }
 
     fun receivePeer(peerId: String, state: ReceiveState, detail: String? = null) {
-        mutable.update { snapshot ->
-            val peer = (snapshot.peers[peerId] ?: PeerSnapshot(peerId)).copy(receiveState = state, detail = detail)
-            snapshot.copy(peers = snapshot.peers + (peerId to peer))
+        mutable.update { it.withPeerState(peerId, state, detail) }
+    }
+
+    /** Blank clears the alias. The name sent over Bluetooth and shown by Samsung is unchanged. */
+    @Synchronized fun rename(context: Context, peerId: String, alias: String) {
+        val cleaned = alias.filterNot { it.isISOControl() }.trim().take(48).ifEmpty { null }
+        context.applicationContext.getSharedPreferences("bridge_peer_readings", Context.MODE_PRIVATE).edit {
+            if (cleaned == null) remove("$peerId.alias") else putString("$peerId.alias", cleaned)
         }
+        mutable.update { snapshot ->
+            val peer = snapshot.peers[peerId] ?: return@update snapshot
+            snapshot.copy(peers = snapshot.peers + (peerId to peer.copy(alias = cleaned)))
+        }
+    }
+
+    /** Removes a stopped device and its stored readings. Bluetooth pairing is kept. */
+    @Synchronized fun forget(context: Context, peerId: String) {
+        BridgeSession.forget(context, peerId)
+        val app = context.applicationContext
+        app.getSharedPreferences("bridge_peer_readings", Context.MODE_PRIVATE).edit {
+            listOf("name", "level", "time", "charging", "plugged", "stop_unconfirmed", "alias").forEach { remove("$peerId.$it") }
+        }
+        val status = app.getSharedPreferences("bridge_status", Context.MODE_PRIVATE)
+        if (status.getString("peer_id", null).equals(peerId, ignoreCase = true)) status.edit { clear() }
+        PeerAlerts.forget(peerId)
+        mutable.update { it.withoutPeer(peerId) }
     }
 
     fun sendOnly(context: Context, peerId: String, peerName: String) {
@@ -155,6 +221,8 @@ object BridgeStatus {
     }
 
     fun peerStopped(context: Context, peerId: String, confirmed: Boolean) {
+        // A late stop callback must not bring back a device the user already removed.
+        if (peerId !in mutable.value.peers) return
         context.applicationContext.getSharedPreferences("bridge_peer_readings", Context.MODE_PRIVATE).edit {
             if (confirmed) remove("$peerId.stop_unconfirmed") else putBoolean("$peerId.stop_unconfirmed", true)
         }
@@ -194,6 +262,8 @@ object BridgeStatus {
             if (charging == null) remove("$peerId.charging") else putBoolean("$peerId.charging", charging)
             if (plugged == null) remove("$peerId.plugged") else putBoolean("$peerId.plugged", plugged)
         }
+        // Only live readings may alert; a restored or initial value is not news.
+        if (connected) PeerAlerts.onReading(context, peerId, mutable.value.peers[peerId]?.displayName ?: peerName, level, charging)
         if (mutable.value.peerId != peerId) return
         mutable.update {
             val next = it.acceptReading(reading, connected)

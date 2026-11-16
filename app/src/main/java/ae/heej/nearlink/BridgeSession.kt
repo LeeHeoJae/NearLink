@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
+import androidx.core.content.edit
 
 /** User intent is persisted separately from historical readings and live service state. */
 object BridgeSession {
@@ -33,6 +34,12 @@ object BridgeSession {
     @Synchronized fun removePeer(context: Context, address: String) {
         val remaining = savedPeers(context).filterNot { it.equals(address, true) }.toSet()
         prefs(context).edit().putStringSet("peers_v2", remaining).commit()
+    }
+
+    /** Drops every stored intent for a device the user removed from the list. */
+    @Synchronized fun forget(context: Context, address: String) {
+        removePeer(context, address)
+        prefs(context).edit { remove("${address.uppercase(java.util.Locale.ROOT)}.send_only") }
     }
 
     fun hasPermissions(context: Context): Boolean = if (Build.VERSION.SDK_INT >= 31) {

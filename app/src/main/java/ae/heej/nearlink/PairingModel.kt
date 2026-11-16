@@ -144,6 +144,8 @@ class PairingModel(application: Application) : AndroidViewModel(application) {
         readyAddress = address
     }
 
+    fun clearMessage() { if (!busy) message = null }
+
     fun cancel(reason: String? = null) {
         generation++
         handler.removeCallbacksAndMessages(null)

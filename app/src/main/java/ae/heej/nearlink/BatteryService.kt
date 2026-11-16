@@ -1,8 +1,5 @@
 package ae.heej.nearlink
 
-import android.app.Notification
-import android.app.NotificationChannel
-import android.app.NotificationManager
 import android.app.Service
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothStatusCodes
@@ -90,6 +87,10 @@ class BatteryService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ACTION_STOP_ALL) {
+            BridgeSession.requestStop(this)
+            return START_NOT_STICKY
+        }
         if (intent?.action == ACTION_PREPARE) {
             readyUntil = android.os.SystemClock.elapsedRealtime() + 120_000
             BridgeStatus.preparation(PreparationState.OPEN, readyUntil)
@@ -159,16 +160,8 @@ class BatteryService : Service() {
     override fun onCreate() {
         super.onCreate()
         BridgeStatus.initialize(this)
-        getSystemService(NotificationManager::class.java).createNotificationChannel(
-            NotificationChannel("probe", "BLE battery test", NotificationManager.IMPORTANCE_LOW)
-        )
-        val notification = Notification.Builder(this, "probe")
-            .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
-            .setContentTitle("배터리 블루투스 시험 중")
-            .setContentText("시험 앱에서 중지할 수 있습니다.")
-            .setOngoing(true)
-            .build()
-        startForeground(1, notification)
+        startForeground(Notifications.SENDER_ID, Notifications.connection(this,
+            "배터리 정보 공유 중", "연결한 기기가 이 기기의 배터리를 확인할 수 있어요."))
         registerReceiver(receiver, IntentFilter(Intent.ACTION_BATTERY_CHANGED))?.let {
             receiver.onReceive(this, it)
         }
@@ -561,6 +554,7 @@ class BatteryService : Service() {
 
     companion object {
         const val ACTION_PREPARE = "ae.heej.nearlink.PREPARE"
+        const val ACTION_STOP_ALL = "ae.heej.nearlink.STOP_ALL"
         private fun newSessionId(): Long = UUID.randomUUID().mostSignificantBits.let { if (it == 0L) 1L else it }
         val SESSION: UUID = UUID.fromString("734b7302-53b1-4cf0-8d2e-d4b5c742b65b")
         val HANDSHAKE: UUID = UUID.fromString("734b7301-53b1-4cf0-8d2e-d4b5c742b65b")

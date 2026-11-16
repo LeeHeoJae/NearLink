@@ -3,6 +3,7 @@ package ae.heej.nearlink
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -10,23 +11,52 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import java.text.DateFormat
 import java.util.Date
+import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
 
+/** A one-tap fix offered next to a message. */
+enum class NoticeAction(val label: String) { APP_SETTINGS("앱 설정 열기"), ENABLE_BLUETOOTH("블루투스 켜기") }
+
+internal data class Notice(val text: String, val isError: Boolean, val action: NoticeAction?, val dismissible: Boolean)
+
+internal class BridgeActions(
+    val onSend: () -> Unit,
+    val onConnect: () -> Unit,
+    val onAdd: () -> Unit,
+    val onStopAll: () -> Unit,
+    val onReconnect: (String) -> Unit,
+    val onStopPeer: (String) -> Unit,
+    val onRename: (String, String) -> Unit,
+    val onForget: (String) -> Unit,
+    val onSetupRequested: () -> Unit,
+    val onDismissSetup: () -> Unit,
+    val onDismissNotice: () -> Unit,
+    val onNoticeAction: (NoticeAction) -> Unit,
+    val onBatterySettings: () -> Unit,
+    val onAlertSettings: (PeerAlertSettings) -> Unit,
+)
+
 @Composable
-internal fun BridgeScreen(status: BridgeSnapshot, message: String?, messageIsError: Boolean, pairing: Boolean,
-    onSend: () -> Unit, onConnect: () -> Unit, onAdd: () -> Unit, onStop: () -> Unit,
-    onReconnect: (String) -> Unit, onStopPeer: (String) -> Unit, setupRequested: Boolean, onSetupRequested: () -> Unit, onDismissSetup: () -> Unit) {
+internal fun BridgeScreen(status: BridgeSnapshot, notice: Notice?, pairing: Boolean, setupRequested: Boolean,
+    batteryRestricted: Boolean, alertSettings: PeerAlertSettings, actions: BridgeActions) {
     val managed = status.hasCompletedSetup() && !setupRequested
     var showAddOptions by rememberSaveable { mutableStateOf(false) }
-    BackHandler(enabled = setupRequested && status.hasCompletedSetup(), onBack = onDismissSetup)
+    var confirmStopAll by rememberSaveable { mutableStateOf(false) }
+    // Reception ages are relative, so the clock ticks while the screen is visible.
+    val now by produceState(System.currentTimeMillis()) {
+        while (true) { delay(30_000); value = System.currentTimeMillis() }
+    }
+    BackHandler(enabled = setupRequested && status.hasCompletedSetup(), onBack = actions.onDismissSetup)
     BoxWithConstraints(Modifier.fillMaxSize().safeDrawingPadding(), contentAlignment = Alignment.TopCenter) {
         val expanded = maxWidth >= BridgeDesign.expandedWidth
         Column(Modifier.widthIn(max = BridgeDesign.maxWidth).fillMaxSize()) {
@@ -40,20 +70,12 @@ internal fun BridgeScreen(status: BridgeSnapshot, message: String?, messageIsErr
                         Spacer(Modifier.height(8.dp))
                         SecondaryText(if (managed) "연결한 기기의 배터리를 확인하세요." else "기기의 배터리를 삼성 위젯으로 연결하세요.")
                     }
-                    message?.let {
-                        Surface(shape = BridgeDesign.groupShape,
-                            color = if (messageIsError) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.primaryContainer,
-                            contentColor = if (messageIsError) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onPrimaryContainer,
-                            modifier = Modifier.fillMaxWidth().padding(bottom = BridgeDesign.gap)) {
-                            Text(it, style = MaterialTheme.typography.bodyLarge,
-                                modifier = Modifier.padding(20.dp).semantics { liveRegion = LiveRegionMode.Polite })
-                        }
-                    }
+                    notice?.let { NoticeCard(it, actions) }
                     if (managed) {
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             FilledTonalButton(onClick = { showAddOptions = true }, enabled = !pairing,
                                 modifier = Modifier.weight(1f).heightIn(min = 48.dp)) { Text("기기 추가") }
-                            OutlinedButton(onClick = onSend, enabled = !pairing && status.sendState != SendState.STARTING &&
+                            OutlinedButton(onClick = actions.onSend, enabled = !pairing && status.sendState != SendState.STARTING &&
                                 status.sendState != SendState.WAITING_FOR_BLUETOOTH,
                                 modifier = Modifier.weight(1f).heightIn(min = 48.dp)) { Text(preparationButtonText(status)) }
                         }
@@ -63,39 +85,40 @@ internal fun BridgeScreen(status: BridgeSnapshot, message: String?, messageIsErr
                                 PreparationFeedback(status)
                             }
                         }
+                        if (batteryRestricted && status.peers.values.any {
+                                it.receiveState == ReceiveState.RETRYING || it.receiveState == ReceiveState.ERROR }) {
+                            Spacer(Modifier.height(BridgeDesign.gap))
+                            BatteryHint(actions.onBatterySettings)
+                        }
                         Spacer(Modifier.height(BridgeDesign.gap))
                         SectionTitle("연결한 기기")
-                        status.peers.values.sortedBy { it.peerName }.forEach { peer ->
-                            PeerItem(peer, { onReconnect(peer.peerId) }, { onStopPeer(peer.peerId) })
-                            Spacer(Modifier.height(BridgeDesign.gap))
-                        }
+                        PeerList(status, now, actions)
                         Group {
-                            TextButton(onClick = onStop, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp),
+                            TextButton(onClick = { confirmStopAll = true }, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp),
                                 colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)) { Text("모든 연결 중지") }
                         }
+                        Spacer(Modifier.height(BridgeDesign.gap))
+                        AlertSettingsGroup(alertSettings, actions.onAlertSettings)
                         Spacer(Modifier.height(BridgeDesign.gap))
                         HistoryGroup(status)
                     } else {
                         if (setupRequested && status.hasCompletedSetup()) {
-                            TextButton(onClick = onDismissSetup, modifier = Modifier.heightIn(min = 48.dp)) { Text("배터리 화면으로 돌아가기") }
+                            TextButton(onClick = actions.onDismissSetup, modifier = Modifier.heightIn(min = 48.dp)) { Text("배터리 화면으로 돌아가기") }
                         }
                         if (expanded) {
                             Row(horizontalArrangement = Arrangement.spacedBy(BridgeDesign.gap)) {
                                 Column(Modifier.weight(1.1f)) { SetupGuide() }
-                                Column(Modifier.weight(1f)) { PreparationGroup(status, pairing, onSend, onStop) }
+                                Column(Modifier.weight(1f)) { PreparationGroup(status, pairing, actions.onSend, actions.onStopAll) }
                             }
                         } else {
                             SetupGuide()
                             Spacer(Modifier.height(BridgeDesign.gap))
-                            PreparationGroup(status, pairing, onSend, onStop)
+                            PreparationGroup(status, pairing, actions.onSend, actions.onStopAll)
                         }
                         if (status.peers.isNotEmpty()) {
                             Spacer(Modifier.height(BridgeDesign.gap))
                             SectionTitle("기기 연결 상태")
-                            status.peers.values.sortedBy { it.peerName }.forEach { peer ->
-                                PeerItem(peer, { onReconnect(peer.peerId) }, { onStopPeer(peer.peerId) })
-                                Spacer(Modifier.height(BridgeDesign.gap))
-                            }
+                            PeerList(status, now, actions)
                         }
                     }
                     Spacer(Modifier.height(24.dp))
@@ -120,12 +143,59 @@ internal fun BridgeScreen(status: BridgeSnapshot, message: String?, messageIsErr
             text = {
                 Column {
                     SecondaryText("상대 기기에서 연결 준비를 먼저 눌러 주세요.")
-                    TextButton(onClick = { showAddOptions = false; onAdd() }, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp)) { Text("새 기기 찾기") }
-                    TextButton(onClick = { showAddOptions = false; onConnect() }, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp)) { Text("기존 페어링 기기 연결") }
+                    TextButton(onClick = { showAddOptions = false; actions.onAdd() }, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp)) { Text("새 기기 찾기") }
+                    TextButton(onClick = { showAddOptions = false; actions.onConnect() }, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp)) { Text("기존 페어링 기기 연결") }
                 }
             }, confirmButton = { TextButton(onClick = { showAddOptions = false }) { Text("닫기") } })
     }
+    if (confirmStopAll) {
+        AlertDialog(onDismissRequest = { confirmStopAll = false }, title = { Text("모든 연결을 중지할까요?") },
+            text = { Text("모든 기기와 배터리를 주고받지 않습니다. 기기 목록과 페어링은 유지되며 각 기기에서 다시 연결할 수 있어요.") },
+            confirmButton = {
+                TextButton(onClick = { confirmStopAll = false; actions.onStopAll() },
+                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)) { Text("모두 중지") }
+            },
+            dismissButton = { TextButton(onClick = { confirmStopAll = false }) { Text("취소") } })
+    }
+}
 
+@Composable
+private fun NoticeCard(notice: Notice, actions: BridgeActions) {
+    Surface(shape = BridgeDesign.groupShape,
+        color = if (notice.isError) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.primaryContainer,
+        contentColor = if (notice.isError) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onPrimaryContainer,
+        modifier = Modifier.fillMaxWidth().padding(bottom = BridgeDesign.gap)) {
+        Column(Modifier.padding(start = 20.dp, end = 12.dp, top = 20.dp, bottom = if (notice.action != null || notice.dismissible) 8.dp else 20.dp)) {
+            Text(notice.text, style = MaterialTheme.typography.bodyLarge,
+                modifier = Modifier.padding(end = 8.dp).semantics { liveRegion = LiveRegionMode.Polite })
+            if (notice.action != null || notice.dismissible) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    if (notice.dismissible) TextButton(onClick = actions.onDismissNotice,
+                        colors = ButtonDefaults.textButtonColors(contentColor = LocalContentColor.current),
+                        modifier = Modifier.heightIn(min = 48.dp).semantics { contentDescription = "메시지 닫기" }) { Text("닫기") }
+                    notice.action?.let { action ->
+                        TextButton(onClick = { actions.onNoticeAction(action) },
+                            colors = ButtonDefaults.textButtonColors(contentColor = LocalContentColor.current),
+                            modifier = Modifier.heightIn(min = 48.dp)) { Text(action.label, fontWeight = FontWeight.SemiBold) }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun BatteryHint(onOpen: () -> Unit) {
+    Group {
+        Column(Modifier.padding(start = BridgeDesign.groupInset, end = 12.dp, top = 20.dp, bottom = 8.dp)) {
+            Text("연결이 자주 끊기나요?", style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.height(4.dp))
+            SecondaryText("배터리 사용 제한 때문에 화면이 꺼지면 연결이 끊길 수 있어요. 제한을 해제하면 배터리 사용량이 늘어날 수 있습니다.")
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                TextButton(onClick = onOpen, modifier = Modifier.heightIn(min = 48.dp)) { Text("배터리 설정 열기") }
+            }
+        }
+    }
 }
 
 @Composable
@@ -217,10 +287,22 @@ private fun PreparationFeedback(status: BridgeSnapshot) {
 }
 
 @Composable
-private fun PeerItem(peer: PeerSnapshot, onReconnect: () -> Unit, onStop: () -> Unit) {
+private fun PeerList(status: BridgeSnapshot, now: Long, actions: BridgeActions) {
+    status.peers.values.sortedBy { it.displayName }.forEach { peer ->
+        key(peer.peerId) { PeerItem(peer, now, actions) }
+        Spacer(Modifier.height(BridgeDesign.gap))
+    }
+}
+
+@Composable
+private fun PeerItem(peer: PeerSnapshot, now: Long, actions: BridgeActions) {
+    var menu by remember { mutableStateOf(false) }
+    var renaming by rememberSaveable { mutableStateOf(false) }
+    var forgetting by rememberSaveable { mutableStateOf(false) }
     Group {
         Column(Modifier.padding(BridgeDesign.groupInset), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text(peer.peerName, style = MaterialTheme.typography.titleLarge)
+            Text(peer.displayName, style = MaterialTheme.typography.titleLarge)
+            if (peer.alias != null) SecondaryText("블루투스 이름 · ${peer.peerName}")
             StatusText(receiveText(peer.receiveState), peer.receiveState == ReceiveState.ERROR)
             if (peer.sendOnly) SecondaryText("이 기기로 배터리를 보내요. PC 배터리는 받지 않습니다.")
             else peer.lastReading?.let { reading ->
@@ -232,17 +314,89 @@ private fun PeerItem(peer: PeerSnapshot, onReconnect: () -> Unit, onStop: () -> 
                     reading.charging == false -> "충전 중 아님"
                     else -> "충전 상태 알 수 없음"
                 }, style = MaterialTheme.typography.bodyLarge)
-                SecondaryText("마지막 수신 · " + DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date(reading.timeMillis)))
+                SecondaryText("마지막 수신 · ${relativeAge(now, reading.timeMillis)} (" +
+                    DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date(reading.timeMillis)) + ")")
+                if (peer.receiveState != ReceiveState.CONNECTED) SecondaryText("마지막으로 받은 잔량이며 현재 상태와 다를 수 있어요.")
             } ?: SecondaryText("아직 배터리 정보를 받지 못했어요.")
             peer.detail?.let { SecondaryText(it) }
             if (peer.receiveState == ReceiveState.STOPPED || peer.receiveState == ReceiveState.ERROR) {
-                FilledTonalButton(onClick = onReconnect, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("다시 연결") }
+                FilledTonalButton(onClick = { actions.onReconnect(peer.peerId) }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("다시 연결") }
             }
-            if (peer.receiveState != ReceiveState.STOPPED) {
-                TextButton(onClick = onStop, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
-                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)) { Text("이 기기 연결 중지") }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (peer.receiveState != ReceiveState.STOPPED) {
+                    TextButton(onClick = { actions.onStopPeer(peer.peerId) }, modifier = Modifier.weight(1f).heightIn(min = 48.dp),
+                        colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)) { Text("연결 중지") }
+                }
+                Box(Modifier.weight(1f)) {
+                    TextButton(onClick = { menu = true }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("기기 설정") }
+                    DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                        DropdownMenuItem(text = { Text("별명 변경") }, onClick = { menu = false; renaming = true })
+                        DropdownMenuItem(
+                            text = { Text(if (peer.receiveState == ReceiveState.STOPPED) "목록에서 제거" else "목록에서 제거 (먼저 연결 중지)") },
+                            enabled = peer.receiveState == ReceiveState.STOPPED,
+                            onClick = { menu = false; forgetting = true })
+                    }
+                }
             }
         }
+    }
+    if (renaming) RenameDialog(peer, onDismiss = { renaming = false }, onSave = { actions.onRename(peer.peerId, it); renaming = false })
+    if (forgetting) {
+        AlertDialog(onDismissRequest = { forgetting = false }, title = { Text("목록에서 제거할까요?") },
+            text = { Text("${peer.displayName}의 저장된 배터리 기록과 별명을 삭제합니다. 블루투스 페어링은 유지되며 ‘기존 페어링 기기 연결’로 다시 추가할 수 있어요.") },
+            confirmButton = {
+                TextButton(onClick = { forgetting = false; actions.onForget(peer.peerId) },
+                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)) { Text("제거") }
+            },
+            dismissButton = { TextButton(onClick = { forgetting = false }) { Text("취소") } })
+    }
+}
+
+@Composable
+private fun RenameDialog(peer: PeerSnapshot, onDismiss: () -> Unit, onSave: (String) -> Unit) {
+    var text by rememberSaveable { mutableStateOf(peer.alias ?: "") }
+    AlertDialog(onDismissRequest = onDismiss, title = { Text("별명 변경") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(value = text, onValueChange = { text = it.take(48) }, singleLine = true,
+                    label = { Text("별명") }, placeholder = { Text(peer.peerName) },
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done), modifier = Modifier.fillMaxWidth())
+                SecondaryText("이 앱에서만 표시됩니다. 비워 두면 블루투스 이름을 사용하며, 삼성 위젯의 이름은 바뀌지 않아요.")
+            }
+        },
+        confirmButton = { TextButton(onClick = { onSave(text) }) { Text("저장") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("취소") } })
+}
+
+@Composable
+private fun AlertSettingsGroup(settings: PeerAlertSettings, onChange: (PeerAlertSettings) -> Unit) {
+    var expanded by rememberSaveable { mutableStateOf(false) }
+    var threshold by remember(settings.threshold) { mutableFloatStateOf(settings.threshold.toFloat()) }
+    Group {
+        Disclosure("배터리 알림", expanded, { expanded = !expanded })
+        if (expanded) Column(Modifier.padding(horizontal = BridgeDesign.groupInset).padding(bottom = 20.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            SettingSwitch("배터리 부족 알림", "충전 중이 아닐 때 한 번 알려요.", settings.low) { onChange(settings.copy(low = it)) }
+            if (settings.low) {
+                Text("${threshold.roundToInt()}% 이하", style = MaterialTheme.typography.bodyLarge)
+                Slider(value = threshold, onValueChange = { threshold = it }, valueRange = 5f..50f, steps = 8,
+                    onValueChangeFinished = { onChange(settings.copy(threshold = threshold.roundToInt())) },
+                    modifier = Modifier.semantics { contentDescription = "배터리 부족 알림 기준" })
+            }
+            SettingSwitch("충전 완료 알림", "100%가 되면 알려요.", settings.full) { onChange(settings.copy(full = it)) }
+            SecondaryText("연결된 기기에서 새 배터리 정보를 받을 때만 알려요. 알림 권한이 꺼져 있으면 표시되지 않습니다.")
+        }
+    }
+}
+
+@Composable
+private fun SettingSwitch(title: String, description: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f).padding(end = 12.dp)) {
+            Text(title, style = MaterialTheme.typography.bodyLarge)
+            SecondaryText(description)
+        }
+        Switch(checked = checked, onCheckedChange = onChange)
     }
 }
 

@@ -127,4 +127,32 @@ class BridgeStatusTest {
         assertTrue(snapshot.copy(peers = mapOf("pc" to peer.copy(receiveState = ReceiveState.STOPPED))).hasCompletedSetup())
         assertFalse(BridgeSnapshot(peers = mapOf("pc" to PeerSnapshot("pc"))).hasCompletedSetup())
     }
+
+    @Test fun peerStateChangesAreRecordedWithTheDeviceName() {
+        val start = BridgeSnapshot(peers = mapOf("a" to PeerSnapshot("a", "휴대폰", alias = "업무폰")))
+        val connected = start.withPeerState("a", ReceiveState.CONNECTED, null)
+        assertEquals("업무폰 · 연결됨", connected.events.single().description)
+        assertEquals(1, connected.withPeerState("a", ReceiveState.CONNECTED, "같은 상태").events.size)
+        assertEquals(start, start.withPeerState("unknown", ReceiveState.STOPPED, null))
+    }
+
+    @Test fun forgettingAPeerClearsItsSelectionAndReading() {
+        val snapshot = BridgeSnapshot(peerId = "first", peerName = "첫 기기", lastReading = reading)
+            .withPeerReading(reading, true).withPeerReading(LastReading("second", "둘째", 50, 1), true)
+        val removed = snapshot.withoutPeer("first")
+        assertNull(removed.peers["first"])
+        assertNull(removed.peerId)
+        assertNull(removed.lastReading)
+        assertEquals(snapshot.peers["second"], removed.peers["second"])
+    }
+
+    @Test fun relativeAgeUsesCoarseReadableUnits() {
+        val minute = 60_000L
+        assertEquals("방금", relativeAge(30_000, 0))
+        assertEquals("5분 전", relativeAge(5 * minute, 0))
+        assertEquals("2시간 전", relativeAge(125 * minute, 0))
+        assertEquals("어제", relativeAge(30 * 60 * minute, 0))
+        assertEquals("3일 전", relativeAge(3 * 24 * 60 * minute, 0))
+        assertEquals("방금", relativeAge(0, 5 * minute))
+    }
 }

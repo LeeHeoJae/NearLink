@@ -1,8 +1,5 @@
 package ae.heej.nearlink
 
-import android.app.Notification
-import android.app.NotificationChannel
-import android.app.NotificationManager
 import android.app.Service
 import android.bluetooth.BluetoothStatusCodes
 import android.bluetooth.BluetoothAdapter
@@ -29,6 +26,12 @@ import android.os.Looper
 import android.os.ParcelUuid
 import android.util.Log
 import java.util.UUID
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.MainScope
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
 
 class ReceiverService : Service() {
     private val connections = mutableMapOf<String, PeerConnection>()
@@ -47,12 +50,18 @@ class ReceiverService : Service() {
         if (Build.VERSION.SDK_INT >= 33) registerReceiver(bluetoothReceiver, IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED), Context.RECEIVER_EXPORTED)
         else registerReceiver(bluetoothReceiver, IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED))
         BridgeStatus.initialize(this)
-        getSystemService(NotificationManager::class.java).createNotificationChannel(
-            NotificationChannel("receiver", "BLE battery test", NotificationManager.IMPORTANCE_LOW))
-        startForeground(2, Notification.Builder(this, "receiver")
-            .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
-            .setContentTitle("배터리 연결 유지 시험 중").setOngoing(true).build())
+        startForeground(Notifications.RECEIVER_ID, receiverNotification(BridgeStatus.state.value.receiverSummary()))
+        // The ongoing notification shows connected devices' latest levels, updated only when the summary changes.
+        summaryJob = scope.launch {
+            BridgeStatus.state.map { it.receiverSummary() }.distinctUntilChanged().collect { summary ->
+                Notifications.update(this@ReceiverService, Notifications.RECEIVER_ID, receiverNotification(summary))
+            }
+        }
     }
+
+    private val scope = MainScope()
+    private var summaryJob: Job? = null
+    private fun receiverNotification(summary: String) = Notifications.connection(this, "기기 배터리 수신 중", summary)
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val address = intent?.getStringExtra("address")?.uppercase(java.util.Locale.ROOT)
@@ -95,6 +104,7 @@ class ReceiverService : Service() {
     }
 
     override fun onDestroy() {
+        scope.cancel()
         unregisterReceiver(bluetoothReceiver)
         connections.values.toList().forEach { it.close() }
         connections.clear()
