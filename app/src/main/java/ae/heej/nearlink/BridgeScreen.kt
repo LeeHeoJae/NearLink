@@ -328,12 +328,26 @@ private fun PeerItem(peer: PeerSnapshot, now: Long, actions: BridgeActions) {
                         colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)) { Text("연결 중지") }
                 }
                 Box(Modifier.weight(1f)) {
-                    TextButton(onClick = { menu = true }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("기기 설정") }
-                    DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                        DropdownMenuItem(text = { Text("별명 변경") }, onClick = { menu = false; renaming = true })
+                    TextButton(onClick = { menu = true }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)
+                        .semantics { stateDescription = if (menu) "펼쳐짐" else "접힘" }) { Text("기기 설정  ▾") }
+                    DropdownMenu(expanded = menu, onDismissRequest = { menu = false },
+                        shape = BridgeDesign.controlShape, containerColor = MaterialTheme.colorScheme.surface,
+                        tonalElevation = 0.dp, shadowElevation = 8.dp) {
+                        DropdownMenuItem(text = { Text("별명 변경", style = MaterialTheme.typography.bodyLarge) },
+                            modifier = Modifier.heightIn(min = 48.dp),
+                            contentPadding = PaddingValues(horizontal = 20.dp),
+                            onClick = { menu = false; renaming = true })
+                        val canForget = peer.receiveState == ReceiveState.STOPPED
                         DropdownMenuItem(
-                            text = { Text(if (peer.receiveState == ReceiveState.STOPPED) "목록에서 제거" else "목록에서 제거 (먼저 연결 중지)") },
-                            enabled = peer.receiveState == ReceiveState.STOPPED,
+                            text = {
+                                Column {
+                                    Text("목록에서 제거", style = MaterialTheme.typography.bodyLarge)
+                                    if (!canForget) Text("먼저 연결을 중지해 주세요", style = MaterialTheme.typography.bodyMedium)
+                                }
+                            },
+                            modifier = Modifier.heightIn(min = 48.dp),
+                            contentPadding = PaddingValues(horizontal = 20.dp),
+                            enabled = canForget,
                             onClick = { menu = false; forgetting = true })
                     }
                 }

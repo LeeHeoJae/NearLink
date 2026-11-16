@@ -27,6 +27,7 @@ private val LightColors = lightColorScheme(
     secondaryContainer = Color(0xFFE8F0FF), onSecondaryContainer = Color(0xFF164B9E),
     background = Color(0xFFF2F2F6), onBackground = Color(0xFF17171B),
     surface = Color.White, onSurface = Color(0xFF17171B),
+    surfaceContainer = Color.White, surfaceContainerHigh = Color.White, surfaceContainerHighest = Color(0xFFF2F2F6),
     onSurfaceVariant = Color(0xFF595961), outlineVariant = Color(0xFFE5E5EB),
     error = Color(0xFFB3261E), errorContainer = Color(0xFFFFEDEA), onErrorContainer = Color(0xFF8C1D18)
 )
@@ -36,6 +37,7 @@ private val DarkColors = darkColorScheme(
     secondaryContainer = Color(0xFF18345C), onSecondaryContainer = Color(0xFFD8E6FF),
     background = Color(0xFF08080A), onBackground = Color(0xFFF3F3F6),
     surface = Color(0xFF1C1C20), onSurface = Color(0xFFF3F3F6),
+    surfaceContainer = Color(0xFF26262B), surfaceContainerHigh = Color(0xFF26262B), surfaceContainerHighest = Color(0xFF303036),
     onSurfaceVariant = Color(0xFFB5B5BF), outlineVariant = Color(0xFF38383F),
     error = Color(0xFFFFB4AB), errorContainer = Color(0xFF4D211F), onErrorContainer = Color(0xFFFFDAD6)
 )
@@ -50,8 +52,15 @@ private val BridgeTypography = Typography(
     labelLarge = TextStyle(fontSize = 16.sp, lineHeight = 24.sp, fontWeight = FontWeight.SemiBold)
 )
 
+// Menus use extraSmall and dialogs use extraLarge by default; align both with the app's rounded groups.
+private val BridgeShapes = Shapes(
+    extraSmall = RoundedCornerShape(20.dp),
+    large = BridgeDesign.groupShape,
+    extraLarge = BridgeDesign.groupShape
+)
+
 @Composable
 internal fun BridgeTheme(content: @Composable () -> Unit) {
     MaterialTheme(colorScheme = if (isSystemInDarkTheme()) DarkColors else LightColors,
-        typography = BridgeTypography, content = content)
+        typography = BridgeTypography, shapes = BridgeShapes, content = content)
 }
