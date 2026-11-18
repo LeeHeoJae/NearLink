@@ -291,7 +291,9 @@ class ReceiverService : Service() {
                 return
             }
             val filter = ScanFilter.Builder().setDeviceAddress(peer.address).setServiceUuid(ParcelUuid(BAS)).build()
-            val mode = if (reconnectAttempts < 2) ScanSettings.SCAN_MODE_LOW_LATENCY else ScanSettings.SCAN_MODE_LOW_POWER
+            // Balanced is enough for a single address-filtered peer and keeps the radio duty cycle
+            // low; LOW_LATENCY made up over half of this app's scans and adds load on shared BLE scanning.
+            val mode = if (reconnectAttempts < 2) ScanSettings.SCAN_MODE_BALANCED else ScanSettings.SCAN_MODE_LOW_POWER
             val settings = ScanSettings.Builder().setScanMode(mode).build()
             scanning = true
             activeScanner.startScan(listOf(filter), settings, scanCallback)
