@@ -129,7 +129,7 @@ class BatteryService : Service() {
         override fun onStartFailure(errorCode: Int) {
             if (callbackGeneration != generation) return
             Log.e(TAG, "advertising failed: $errorCode")
-            BridgeStatus.send(SendState.ERROR, "배터리 보내기를 시작하지 못했습니다. 블루투스를 확인하고 다시 시도해 주세요.")
+            BridgeStatus.send(SendState.ERROR, "배터리 보내기를 시작하지 못했어요. 블루투스를 확인하고 다시 시도해 주세요.")
             stopSelf()
         }
     }
@@ -191,7 +191,7 @@ class BatteryService : Service() {
             advertiser = adapter.bluetoothLeAdvertiser
             if (advertiser == null) {
                 Log.e(TAG, "BLE advertising unavailable")
-                BridgeStatus.send(SendState.ERROR, "배터리 보내기를 사용할 수 없습니다. 블루투스 상태와 기기의 BLE 지원 여부를 확인해 주세요.")
+                BridgeStatus.send(SendState.ERROR, "배터리 보내기를 사용할 수 없어요. 블루투스 상태와 기기의 BLE 지원 여부를 확인해 주세요.")
                 stopSelf()
                 return
             }
@@ -199,7 +199,7 @@ class BatteryService : Service() {
             server = openedServer
             if (openedServer == null) {
                 Log.e(TAG, "GATT server unavailable")
-                BridgeStatus.send(SendState.ERROR, "배터리 서비스를 열지 못했습니다. 블루투스를 확인하고 다시 시도해 주세요.")
+                BridgeStatus.send(SendState.ERROR, "배터리 서비스를 열지 못했어요. 블루투스를 확인하고 다시 시도해 주세요.")
                 stopSelf()
                 return
             }
@@ -229,7 +229,7 @@ class BatteryService : Service() {
                 BluetoothGattCharacteristic.PERMISSION_READ_ENCRYPTED or BluetoothGattCharacteristic.PERMISSION_WRITE_ENCRYPTED))
             if (!openedServer.addService(service)) {
                 Log.e(TAG, "failed to register BAS")
-                BridgeStatus.send(SendState.ERROR, "배터리 서비스를 등록하지 못했습니다. 다시 시도해 주세요.")
+                BridgeStatus.send(SendState.ERROR, "배터리 서비스를 등록하지 못했어요. 다시 시도해 주세요.")
                 stopSelf()
             }
         } catch (e: SecurityException) {
@@ -244,7 +244,7 @@ class BatteryService : Service() {
             if (callbackGeneration != generation) return
             if (status != BluetoothGatt.GATT_SUCCESS) {
                 Log.e(TAG, "service registration failed: $status")
-                BridgeStatus.send(SendState.ERROR, "배터리 서비스를 등록하지 못했습니다. 다시 시도해 주세요.")
+                BridgeStatus.send(SendState.ERROR, "배터리 서비스를 등록하지 못했어요. 다시 시도해 주세요.")
                 stopSelf()
                 return
             }

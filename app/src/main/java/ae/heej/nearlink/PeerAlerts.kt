@@ -57,8 +57,8 @@ object PeerAlerts {
         load(context)
         val alert = latches.getOrPut(peerId) { AlertLatch() }.update(level, charging, mutable.value) ?: return
         val text = when (alert) {
-            PeerAlert.LOW -> "배터리가 부족합니다. 현재 $level%"
-            PeerAlert.FULL -> "배터리가 완전히 충전되었습니다."
+            PeerAlert.LOW -> "배터리가 부족해요. 현재 $level%"
+            PeerAlert.FULL -> "배터리가 완전히 충전됐어요."
         }
         Notifications.alert(context, peerId, name, text)
     }

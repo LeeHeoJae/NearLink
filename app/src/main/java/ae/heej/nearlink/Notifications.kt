@@ -18,9 +18,9 @@ internal object Notifications {
         val manager = context.getSystemService(NotificationManager::class.java)
         listOf("probe", "receiver").forEach { manager.deleteNotificationChannel(it) }
         manager.createNotificationChannel(NotificationChannel(CONNECTION_CHANNEL, "기기 연결 유지",
-            NotificationManager.IMPORTANCE_LOW).apply { description = "배터리를 주고받는 동안 표시됩니다." })
+            NotificationManager.IMPORTANCE_LOW).apply { description = "배터리를 주고받는 동안 표시돼요." })
         manager.createNotificationChannel(NotificationChannel(ALERT_CHANNEL, "기기 배터리 알림",
-            NotificationManager.IMPORTANCE_DEFAULT).apply { description = "연결한 기기의 배터리 부족과 충전 완료를 알립니다." })
+            NotificationManager.IMPORTANCE_DEFAULT).apply { description = "연결한 기기의 배터리 부족과 충전 완료를 알려요." })
     }
 
     private fun openApp(context: Context): PendingIntent = PendingIntent.getActivity(context, 0,
@@ -70,5 +70,5 @@ internal fun BridgeSnapshot.receiverSummary(): String {
         .sortedBy { it.displayName }
     if (connected.isNotEmpty()) return connected.joinToString(" · ") { "${it.displayName} ${it.lastReading!!.level}%" }
     val waiting = peers.values.count { it.receiveState != ReceiveState.STOPPED && it.receiveState != ReceiveState.SEND_ONLY }
-    return if (waiting > 0) "기기 ${waiting}대의 연결을 기다리고 있어요." else "연결한 기기가 없습니다."
+    return if (waiting > 0) "기기 ${waiting}대의 연결을 기다리고 있어요." else "연결한 기기가 없어요."
 }

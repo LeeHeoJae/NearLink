@@ -77,11 +77,11 @@ pub fn directory() -> Result<PathBuf, String> {
         return args
             .get(index + 1)
             .map(PathBuf::from)
-            .ok_or("--data-dir 경로가 필요합니다.".into());
+            .ok_or("--data-dir 경로가 필요해요.".into());
     }
     std::env::var_os("LOCALAPPDATA")
         .map(|root| PathBuf::from(root).join("NearLink"))
-        .ok_or("사용자 설정 폴더를 찾지 못했습니다.".into())
+        .ok_or("사용자 설정 폴더를 찾지 못했어요.".into())
 }
 
 pub fn load(directory: &Path) -> Result<Settings, String> {
@@ -90,7 +90,7 @@ pub fn load(directory: &Path) -> Result<Settings, String> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Ok(Settings::default());
         }
-        Err(error) => return Err(format!("설정을 읽지 못했습니다: {error}")),
+        Err(error) => return Err(format!("설정을 읽지 못했어요: {error}")),
     };
     let settings: Settings =
         serde_json::from_str(&text).map_err(|e| format!("설정 파일을 확인해 주세요: {e}"))?;
@@ -99,12 +99,12 @@ pub fn load(directory: &Path) -> Result<Settings, String> {
         || settings.low_threshold > 90
         || settings.peers.len() > 16
     {
-        return Err("지원하지 않는 설정 형식입니다. settings.json을 확인해 주세요.".into());
+        return Err("지원하지 않는 설정 형식이에요. settings.json을 확인해 주세요.".into());
     }
     let mut addresses = std::collections::HashSet::new();
     for peer in &settings.peers {
         if peer.address == 0 || peer.address >= (1 << 48) || !addresses.insert(peer.address) {
-            return Err("설정에 잘못되거나 중복된 기기 주소가 있습니다.".into());
+            return Err("설정에 잘못되거나 중복된 기기 주소가 있어요.".into());
         }
     }
     Ok(settings)
@@ -129,7 +129,7 @@ pub fn save(directory: &Path, settings: &Settings) -> Result<(), String> {
             MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
         )
     }
-    .map_err(|e| format!("설정을 저장하지 못했습니다: {e}"))
+    .map_err(|e| format!("설정을 저장하지 못했어요: {e}"))
 }
 
 #[cfg(test)]

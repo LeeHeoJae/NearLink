@@ -50,7 +50,7 @@ pub(super) fn request(pairing: &DeviceInformationPairing, stop: &Arc<AtomicBool>
                 DevicePairingKinds::ConfirmPinMatch => {
                     let pin = args.Pin()?.to_string();
                     if !valid_pin(&pin) {
-                        return Err(super::failure("기기에서 잘못된 페어링 확인 코드를 받았습니다."));
+                        return Err(super::failure("기기에서 잘못된 페어링 확인 코드를 받았어요."));
                     }
                     let name = args.DeviceInformation()?.Name()?.to_string();
                     let deferral = args.GetDeferral()?;
@@ -75,7 +75,7 @@ pub(super) fn request(pairing: &DeviceInformationPairing, stop: &Arc<AtomicBool>
                     });
                     Ok(())
                 }
-                _ => Err(super::failure("이 기기의 페어링 확인 방식을 지원하지 않습니다.")),
+                _ => Err(super::failure("이 기기의 페어링 확인 방식을 지원하지 않아요.")),
             }
         })();
         if let Err(error) = result {
@@ -91,8 +91,8 @@ pub(super) fn request(pairing: &DeviceInformationPairing, stop: &Arc<AtomicBool>
     let status = result.Status()?;
     if status != DevicePairingResultStatus::Paired && status != DevicePairingResultStatus::AlreadyPaired {
         let detail = callback_error.lock().unwrap().clone().unwrap_or_else(|| {
-            if seen.load(Ordering::Acquire) { "페어링 확인을 완료하지 못했습니다.".into() }
-            else { "기기에서 페어링 확인 요청을 받지 못했습니다.".into() }
+            if seen.load(Ordering::Acquire) { "페어링 확인을 완료하지 못했어요.".into() }
+            else { "기기에서 페어링 확인 요청을 받지 못했어요.".into() }
         });
         let cause = super::check_pairing_result(status).unwrap_err();
         return Err(super::pairing_failure(&format!("{} {detail}", cause.message())));
@@ -124,7 +124,7 @@ fn confirm_pin(name: &str, pin: &str, active: &AtomicBool, stop: &AtomicBool, ow
     if !active.load(Ordering::Acquire) || stop.load(Ordering::Acquire) {
         return Ok(false);
     }
-    let text: Vec<u16> = format!("{name}\n\n확인 코드: {pin}\n\nAndroid에 같은 코드가 표시되면 ‘예’를 누르세요.\nAndroid에서도 페어링 요청을 확인해 주세요.")
+    let text: Vec<u16> = format!("{name}\n\n확인 코드: {pin}\n\nAndroid에 같은 코드가 표시되면 ‘예’를 눌러 주세요.\nAndroid에서도 페어링 요청을 확인해 주세요.")
         .encode_utf16().chain(Some(0)).collect();
     let state = PromptState { active, stop };
     let config = TASKDIALOGCONFIG {

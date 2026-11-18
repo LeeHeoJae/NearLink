@@ -202,7 +202,7 @@ pub fn run() -> Result<(), String> {
     unsafe {
         let preview = theme::preview();
         if preview && !std::env::args().any(|a| a == "--data-dir") {
-            return Err("미리 보기에는 별도 --data-dir 폴더를 지정하세요.".into());
+            return Err("미리 보기에는 별도 --data-dir 폴더를 지정해 주세요.".into());
         }
         let directory = config::directory()?;
         std::fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
@@ -519,7 +519,7 @@ unsafe extern "system" fn window_proc(
                 markup.dwFlags = EMF_CENTERED;
                 copy_wide(
                     &mut markup.szMarkup,
-                    "연결한 기기가 없습니다.\nAndroid NearLink에서 연결 준비를 누른 뒤 기기를 추가하세요.",
+                    "연결한 기기가 없어요.\nAndroid NearLink에서 연결 준비를 누른 뒤 기기를 추가해 주세요.",
                 );
                 return LRESULT(1);
             }
@@ -811,7 +811,7 @@ impl App {
             self.update_font();
             self.resize_rows();
             self.quick_list = self.device_list(self.quick);
-            self.control(self.quick,w!("STATIC"),"연결한 기기가 없습니다.\r\nAndroid NearLink에서 연결 준비를 누른 뒤 기기를 추가하세요.",WINDOW_STYLE(SS_CENTER),305);
+            self.control(self.quick,w!("STATIC"),"연결한 기기가 없어요.\r\nAndroid NearLink에서 연결 준비를 누른 뒤 기기를 추가해 주세요.",WINDOW_STYLE(SS_CENTER),305);
             self.button(self.quick, "기기 추가(&A)", ADD);
             self.button(self.quick, "상세 설정(&O)", OPEN_MAIN);
         }
@@ -1344,7 +1344,7 @@ impl App {
         self.control(
             self.main,
             w!("STATIC"),
-            "가까이 있는 휴대폰과 태블릿의 배터리를 확인하세요.",
+            "가까이 있는 휴대폰과 태블릿의 배터리를 확인해 주세요.",
             WINDOW_STYLE::default(),
             301,
         );
@@ -1360,7 +1360,7 @@ impl App {
             self.button(self.main, text, id);
         }
         self.list = self.device_list(self.main);
-        self.control(self.main,w!("STATIC"),"연결한 기기가 없습니다.\r\nAndroid NearLink에서 연결 준비를 누른 뒤 기기를 추가하세요.",WINDOW_STYLE(SS_CENTER),305);
+        self.control(self.main,w!("STATIC"),"연결한 기기가 없어요.\r\nAndroid NearLink에서 연결 준비를 누른 뒤 기기를 추가해 주세요.",WINDOW_STYLE(SS_CENTER),305);
         self.theme.window(self.main);
         send(
             GetDlgItem(Some(self.main), 300)?,
@@ -1375,7 +1375,7 @@ impl App {
             if self.preview {
                 "미리 보기 · 예시 기기, BLE 수신 안 함"
             } else {
-                "창을 닫아도 트레이에서 수신합니다."
+                "창을 닫아도 트레이에서 수신해요."
             },
             WINDOW_STYLE::default(),
             304,
@@ -1532,12 +1532,12 @@ impl App {
             );
         }
         let detail = peer.map(|peer| {
-            if peer.stale() { "15분 이상 갱신되지 않은 값입니다. 배터리가 변하지 않으면 수신 시각이 오래될 수 있습니다.".into() }
-            else if peer.confirmed_unchanged() { "배터리 변화가 없어 수신 시각은 오래됐지만, 최근 연결 확인에 성공해 현재 값입니다.".into() }
+            if peer.stale() { "15분 이상 갱신되지 않은 값이에요. 배터리가 변하지 않으면 수신 시각이 오래될 수 있어요.".into() }
+            else if peer.confirmed_unchanged() { "배터리 변화가 없어 수신 시각은 오래됐지만, 최근 연결 확인에 성공해 현재 값이에요.".into() }
             else if !peer.detail.is_empty() { peer.detail.clone() }
-            else if peer.state != State::Connected && peer.updated.is_some() { "마지막으로 받은 잔량입니다. 현재 값과 다를 수 있습니다.".into() }
-            else { "배터리 값이 바뀌면 자동으로 갱신합니다. 마지막 수신 시각은 배터리 데이터 수신 기준입니다.".into() }
-        }).unwrap_or_else(|| if model.message.is_empty() { "기기를 선택하면 연결 상태를 확인할 수 있습니다.".into() } else { model.message.clone() });
+            else if peer.state != State::Connected && peer.updated.is_some() { "마지막으로 받은 잔량이에요. 현재 값과 다를 수 있어요.".into() }
+            else { "배터리 값이 바뀌면 자동으로 갱신해요. 마지막 수신 시각은 배터리 데이터 수신 기준이에요.".into() }
+        }).unwrap_or_else(|| if model.message.is_empty() { "기기를 선택하면 연결 상태를 확인할 수 있어요.".into() } else { model.message.clone() });
         set_text_if_changed(self.info, &detail);
     }
 
@@ -1775,7 +1775,7 @@ impl App {
                 let _ = SetWindowTextW(
                     info,
                     w!(
-                        "Android NearLink에서 연결 준비를 누르세요.\r\n검색된 기기를 선택하고 연결하면 페어링을 진행합니다."
+                        "Android NearLink에서 연결 준비를 눌러 주세요.\r\n검색된 기기를 선택하고 연결하면 페어링을 진행할게요."
                     ),
                 );
                 list = self.control(
@@ -1812,7 +1812,7 @@ impl App {
                 self.place(info, 20, 20, 545, 50);
                 let _ = SetWindowTextW(
                     info,
-                    w!("기기 별명(&N)\r\n비워 두면 블루투스 기기 이름을 사용합니다."),
+                    w!("기기 별명(&N)\r\n비워 두면 블루투스 기기 이름을 사용해요."),
                 );
                 input = self.control(
                     hwnd,
@@ -1962,14 +1962,14 @@ impl App {
         );
         let status = if model.scanning {
             format!(
-                "기기를 찾고 있습니다… {}대 발견 · 검색은 15초 후 끝납니다.",
+                "기기를 찾고 있어요… {}대 발견 · 검색은 15초 후 끝나요.",
                 model.discovered.len()
             )
         } else if !model.message.is_empty() {
             model.message.clone()
         } else {
             format!(
-                "{}대를 찾았습니다. 연결할 기기를 선택하세요.",
+                "{}대를 찾았어요. 연결할 기기를 선택해 주세요.",
                 model.discovered.len()
             )
         };
@@ -2006,7 +2006,7 @@ impl App {
             if settings.peers.len() >= 16 {
                 warn(
                     dialog.hwnd,
-                    "최대 16대까지 등록할 수 있습니다. 사용하지 않는 기기를 먼저 제거하세요.",
+                    "최대 16대까지 등록할 수 있어요. 사용하지 않는 기기를 먼저 제거해 주세요.",
                 );
                 return;
             }
@@ -2072,7 +2072,7 @@ impl App {
             Kind::Settings => {
                 let threshold = control_text(dialog.input).trim().parse::<u8>();
                 let Ok(threshold @ 1..=90) = threshold else {
-                    warn(dialog.hwnd, "부족 알림 기준은 1~90 사이의 숫자를 입력하세요.");
+                    warn(dialog.hwnd, "부족 알림 기준은 1~90 사이의 숫자를 입력해 주세요.");
                     let _ = SetFocus(Some(dialog.input));
                     return;
                 };
@@ -2122,7 +2122,7 @@ impl App {
             .map(|peer| peer.label().to_string())
             .unwrap_or_default();
         let message = format!(
-            "{label} 기기를 이 PC의 목록에서 제거할까요?\nWindows 페어링은 유지됩니다. Android의 송신도 끝내려면 상대 앱에서 연결을 중지하세요."
+            "{label} 기기를 이 PC의 목록에서 제거할까요?\nWindows 페어링은 유지돼요. Android의 송신도 끝내려면 상대 앱에서 연결을 중지해 주세요."
         );
         if MessageBoxW(
             Some(self.main),
@@ -2308,7 +2308,7 @@ impl App {
                 menu,
                 MF_STRING | MF_DISABLED,
                 10,
-                w!("연결한 기기가 없습니다"),
+                w!("연결한 기기가 없어요"),
             );
         }
         for (index, peer) in model.peers.values().enumerate() {

@@ -140,7 +140,7 @@ internal fun BridgeScreen(status: BridgeSnapshot, notice: Notice?, pairing: Bool
     }
     if (confirmStopAll) {
         AlertDialog(onDismissRequest = { confirmStopAll = false }, title = { Text("모든 연결을 중지할까요?") },
-            text = { Text("모든 기기와 배터리를 주고받지 않습니다. 기기 목록과 페어링은 유지되며 각 기기에서 다시 연결할 수 있어요.") },
+            text = { Text("모든 기기와 배터리를 주고받지 않아요. 기기 목록과 페어링은 유지되며 각 기기에서 다시 연결할 수 있어요.") },
             confirmButton = {
                 TextButton(onClick = { confirmStopAll = false; actions.onStopAll() },
                     colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)) { Text("모두 중지") }
@@ -232,7 +232,7 @@ private fun BatteryHint(onOpen: () -> Unit) {
         Column(Modifier.padding(start = BridgeDesign.groupInset, end = 12.dp, top = 20.dp, bottom = 8.dp)) {
             Text("연결이 자주 끊기나요?", style = MaterialTheme.typography.titleMedium)
             Spacer(Modifier.height(4.dp))
-            SecondaryText("배터리 사용 제한 때문에 화면이 꺼지면 연결이 끊길 수 있어요. 제한을 해제하면 배터리 사용량이 늘어날 수 있습니다.")
+            SecondaryText("배터리 사용 제한 때문에 화면이 꺼지면 연결이 끊길 수 있어요. 제한을 해제하면 배터리 사용량이 늘어날 수 있어요.")
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                 TextButton(onClick = onOpen, modifier = Modifier.heightIn(min = 48.dp)) { Text("배터리 설정 열기") }
             }
@@ -368,7 +368,7 @@ private fun PeerItem(peer: PeerSnapshot, now: Long, actions: BridgeActions, wide
                 }
             } else {
                 PeerSummary(peer)
-                if (peer.sendOnly) SecondaryText("이 기기로 배터리를 보내요. PC 배터리는 받지 않습니다.")
+                if (peer.sendOnly) SecondaryText("이 기기로 배터리를 보내요. PC 배터리는 받지 않아요.")
                 else if (reading != null) {
                     Text("${reading.level}%", style = MaterialTheme.typography.displayMedium)
                     ReadingDetails(peer, reading, now)
@@ -401,7 +401,7 @@ private fun PeerItem(peer: PeerSnapshot, now: Long, actions: BridgeActions, wide
     if (renaming) RenameDialog(peer, onDismiss = { renaming = false }, onSave = { actions.onRename(peer.peerId, it); renaming = false })
     if (forgetting) {
         AlertDialog(onDismissRequest = { forgetting = false }, title = { Text("목록에서 제거할까요?") },
-            text = { Text("${peer.displayName}의 저장된 배터리 기록과 별명을 삭제합니다. 블루투스 페어링은 유지되며 ‘기존 페어링 기기 연결’로 다시 추가할 수 있어요.") },
+            text = { Text("${peer.displayName}의 저장된 배터리 기록과 별명을 삭제해요. 블루투스 페어링은 유지되며 ‘기존 페어링 기기 연결’로 다시 추가할 수 있어요.") },
             confirmButton = {
                 TextButton(onClick = { forgetting = false; actions.onForget(peer.peerId) },
                     colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)) { Text("제거") }
@@ -469,7 +469,7 @@ private fun RenameDialog(peer: PeerSnapshot, onDismiss: () -> Unit, onSave: (Str
                 OutlinedTextField(value = text, onValueChange = { text = it.take(48) }, singleLine = true,
                     label = { Text("별명") }, placeholder = { Text(peer.peerName) },
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done), modifier = Modifier.fillMaxWidth())
-                SecondaryText("이 앱에서만 표시됩니다. 비워 두면 블루투스 이름을 사용하며, 삼성 위젯의 이름은 바뀌지 않아요.")
+                SecondaryText("이 앱에서만 표시돼요. 비워 두면 블루투스 이름을 사용하며, 삼성 위젯의 이름은 바뀌지 않아요.")
             }
         },
         confirmButton = { TextButton(onClick = { onSave(text) }) { Text("저장") } },
@@ -492,7 +492,7 @@ private fun AlertSettingsGroup(settings: PeerAlertSettings, onChange: (PeerAlert
                     modifier = Modifier.semantics { contentDescription = "배터리 부족 알림 기준" })
             }
             SettingSwitch("충전 완료 알림", "100%가 되면 알려요.", settings.full) { onChange(settings.copy(full = it)) }
-            SecondaryText("연결된 기기에서 새 배터리 정보를 받을 때만 알려요. 알림 권한이 꺼져 있으면 표시되지 않습니다.")
+            SecondaryText("연결된 기기에서 새 배터리 정보를 받을 때만 알려요. 알림 권한이 꺼져 있으면 표시되지 않아요.")
         }
     }
 }

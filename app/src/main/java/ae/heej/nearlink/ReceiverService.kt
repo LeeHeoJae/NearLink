@@ -184,7 +184,7 @@ class ReceiverService : Service() {
         if (activeOperation == null) runNextOperation(active)
     }
 
-    private val operationTimeout = Runnable { scheduleReconnect("응답이 없어 다시 연결합니다.") }
+    private val operationTimeout = Runnable { scheduleReconnect("응답이 없어 다시 연결할게요.") }
 
     private fun armTimeout() {
         handler.removeCallbacks(operationTimeout)
@@ -225,7 +225,7 @@ class ReceiverService : Service() {
                 if (!scanning || stopping) return@post
                 Log.e(TAG, "scan failed: $errorCode")
                 stopScan()
-                scheduleReconnect("기기 검색에 실패했습니다. 블루투스를 확인해 주세요.")
+                scheduleReconnect("기기 검색에 실패했어요. 블루투스를 확인해 주세요.")
             }
         }
     }
@@ -236,12 +236,12 @@ class ReceiverService : Service() {
         try {
             val adapter = getSystemService(BluetoothManager::class.java).adapter
             if (adapter == null || !adapter.isEnabled) {
-                BridgeStatus.receivePeer(address, ReceiveState.WAITING_FOR_BLUETOOTH, "블루투스를 켜면 다시 연결을 시도합니다.")
+                BridgeStatus.receivePeer(address, ReceiveState.WAITING_FOR_BLUETOOTH, "블루투스를 켜면 다시 연결을 시도할게요.")
                 return
             }
             val selected = adapter.bondedDevices.firstOrNull { it.address.equals(address, true) }
             if (selected == null) {
-                BridgeStatus.receivePeer(address, ReceiveState.ERROR, "페어링된 기기를 찾지 못했습니다. 블루투스 설정을 확인해 주세요.")
+                BridgeStatus.receivePeer(address, ReceiveState.ERROR, "페어링된 기기를 찾지 못했어요. 블루투스 설정을 확인해 주세요.")
                 return
             }
             if (device == selected && (gatt != null || scanning)) {
@@ -286,8 +286,8 @@ class ReceiverService : Service() {
             if (activeScanner == null) {
                 Log.e(TAG, "BLE scanner unavailable")
                 if (adapter == null || !adapter.isEnabled) {
-                    scheduleReconnect("블루투스를 켜면 다시 연결을 시도합니다.", waitingForBluetooth = true)
-                } else scheduleReconnect("기기 검색을 사용할 수 없습니다. 블루투스를 확인해 주세요.")
+                    scheduleReconnect("블루투스를 켜면 다시 연결을 시도할게요.", waitingForBluetooth = true)
+                } else scheduleReconnect("기기 검색을 사용할 수 없어요. 블루투스를 확인해 주세요.")
                 return
             }
             val filter = ScanFilter.Builder().setDeviceAddress(peer.address).setServiceUuid(ParcelUuid(BAS)).build()
@@ -451,7 +451,7 @@ class ReceiverService : Service() {
                     return@post
                 }
                 if (status != BluetoothGatt.GATT_SUCCESS) {
-                    if (sessionClient != null) { scheduleReconnect("연결 확인에 실패해 다시 연결합니다."); return@post }
+                    if (sessionClient != null) { scheduleReconnect("연결 확인에 실패해 다시 연결할게요."); return@post }
                     Log.w(TAG, "Reciprocal setup was not accepted: $status")
                 }
                 if (operation.sessionStep == 3) sessionClient?.written()
@@ -465,7 +465,7 @@ class ReceiverService : Service() {
                 val operation = activeOperation ?: return@post
                 if (!operation.subscribe || operation.characteristic !== descriptor.characteristic) return@post
                 Log.i(TAG, "subscription callback characteristic=${descriptor.characteristic.uuid} descriptor=${descriptor.uuid} status=$status")
-                if (status != BluetoothGatt.GATT_SUCCESS) { scheduleReconnect("변경 알림을 설정하지 못해 다시 연결합니다."); return@post }
+                if (status != BluetoothGatt.GATT_SUCCESS) { scheduleReconnect("변경 알림을 설정하지 못해 다시 연결할게요."); return@post }
                 finishOperation(gatt)
             }
         }
@@ -508,9 +508,9 @@ class ReceiverService : Service() {
             return
         }
         val service = active.getService(BAS)
-        if (service == null) { Log.e(TAG, "BAS missing"); scheduleReconnect("상대 기기에서 배터리 서비스를 찾지 못했습니다. 배터리 보내기를 확인해 주세요."); return }
+        if (service == null) { Log.e(TAG, "BAS missing"); scheduleReconnect("상대 기기에서 배터리 서비스를 찾지 못했어요. 배터리 보내기를 확인해 주세요."); return }
         val level = service.getCharacteristic(LEVEL)
-        if (level == null) { scheduleReconnect("상대 기기에 잔량 정보가 없습니다."); return }
+        if (level == null) { scheduleReconnect("상대 기기에 잔량 정보가 없어요."); return }
         lastLevel = null
         charging = null
         plugged = null
@@ -588,7 +588,7 @@ class ReceiverService : Service() {
                     1 -> sessionClient?.hello()
                     3 -> sessionClient?.acknowledgement()
                     else -> byteArrayOf(if (operation.stop) 4 else if (operation.recover) 3 else 1)
-                } ?: run { scheduleReconnect("연결 세션을 확인할 수 없어 다시 연결합니다."); return }
+                } ?: run { scheduleReconnect("연결 세션을 확인할 수 없어 다시 연결할게요."); return }
                 if (Build.VERSION.SDK_INT >= 33) active.writeCharacteristic(operation.characteristic, payload, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT) == BluetoothStatusCodes.SUCCESS
                 else {
                     operation.characteristic.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
@@ -612,7 +612,7 @@ class ReceiverService : Service() {
                 if (operation.stop) finishStop()
                 else if (operation.recover) finishOperation(active)
                 else if (operation.handshake && sessionClient == null) finishOperation(active)
-                else scheduleReconnect("배터리 정보 요청에 실패해 다시 연결합니다.")
+                else scheduleReconnect("배터리 정보 요청에 실패해 다시 연결할게요.")
             }
         } catch (e: SecurityException) {
             BridgeStatus.receivePeer(address, ReceiveState.ERROR, "주변 기기 권한을 허용한 뒤 다시 연결해 주세요.")
@@ -633,7 +633,7 @@ class ReceiverService : Service() {
         val valid = if (characteristic.uuid == BatteryService.SESSION) value != null && sessionClient?.acceptReady(value) == true
             else value != null && acceptLoggedValue("read", characteristic.uuid, value)
         if (status != BluetoothGatt.GATT_SUCCESS || !valid) {
-            scheduleReconnect("배터리를 읽지 못해 다시 연결합니다.")
+            scheduleReconnect("배터리를 읽지 못해 다시 연결할게요.")
             return
         }
         finishOperation(active)

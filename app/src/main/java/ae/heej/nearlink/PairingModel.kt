@@ -36,7 +36,7 @@ class PairingModel(application: Application) : AndroidViewModel(application) {
     var readyAddress by mutableStateOf<String?>(null)
     private var pendingAddress: String? = null
     private var generation = 0
-    private val timeout = Runnable { cancel("기기 추가 시간이 초과됐습니다. 상대 앱의 연결 준비를 확인하고 다시 시도해 주세요.") }
+    private val timeout = Runnable { cancel("기기 추가 시간이 초과됐어요. 상대 앱의 연결 준비를 확인하고 다시 시도해 주세요.") }
 
     private val bondReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -46,7 +46,7 @@ class PairingModel(application: Application) : AndroidViewModel(application) {
                 if (device.address != pendingAddress || !busy) return
                 when (device.bondState) {
                     BluetoothDevice.BOND_BONDED -> complete(device.address)
-                    BluetoothDevice.BOND_NONE -> cancel("페어링이 완료되지 않았습니다. 기기를 다시 추가해 주세요.")
+                    BluetoothDevice.BOND_NONE -> cancel("페어링이 완료되지 않았어요. 기기를 다시 추가해 주세요.")
                 }
             } catch (_: SecurityException) { cancel("주변 기기 권한을 확인해 주세요.") }
         }
@@ -63,7 +63,7 @@ class PairingModel(application: Application) : AndroidViewModel(application) {
         generation++
         val requestGeneration = generation
         busy = true
-        message = "주변 기기를 찾습니다. 상대 기기에서도 앱을 열고 연결 준비를 눌러 주세요."
+        message = "주변 기기를 찾고 있어요. 상대 기기에서도 앱을 열고 연결 준비를 눌러 주세요."
         handler.postDelayed(timeout, 120_000)
         val filter = BluetoothLeDeviceFilter.Builder().setScanFilter(
             ScanFilter.Builder().setServiceUuid(ParcelUuid(BRIDGE_UUID)).build()).build()
@@ -87,7 +87,7 @@ class PairingModel(application: Application) : AndroidViewModel(application) {
             @Suppress("OVERRIDE_DEPRECATION")
             override fun onFailure(error: CharSequence?) {
                 handler.post {
-                    if (busy && requestGeneration == generation) cancel("기기를 추가하지 못했습니다. 상대 기기의 연결 준비와 블루투스·위치 서비스 상태를 확인해 주세요.")
+                    if (busy && requestGeneration == generation) cancel("기기를 추가하지 못했어요. 상대 기기의 연결 준비와 블루투스와 위치 서비스 상태를 확인해 주세요.")
                 }
             }
         }
@@ -97,7 +97,7 @@ class PairingModel(application: Application) : AndroidViewModel(application) {
                 @Suppress("DEPRECATION")
                 manager.associate(request, cb, handler)
             }
-        } catch (_: Exception) { cancel("기기 검색을 시작하지 못했습니다. 블루투스와 주변 기기 권한을 확인해 주세요.") }
+        } catch (_: Exception) { cancel("기기 검색을 시작하지 못했어요. 블루투스와 주변 기기 권한을 확인해 주세요.") }
     }
 
     fun selected(data: Intent?) {
@@ -114,7 +114,7 @@ class PairingModel(application: Application) : AndroidViewModel(application) {
             else if (Build.VERSION.SDK_INT >= 33) {
                 data?.getParcelableExtra(CompanionDeviceManager.EXTRA_ASSOCIATION, AssociationInfo::class.java)
                     ?.deviceMacAddress?.toString()?.let(::bond)
-            } else cancel("선택한 기기 정보를 받지 못했습니다. 다시 시도해 주세요.")
+            } else cancel("선택한 기기 정보를 받지 못했어요. 다시 시도해 주세요.")
         } catch (_: SecurityException) { cancel("주변 기기 권한을 확인해 주세요.") }
     }
 
@@ -124,15 +124,15 @@ class PairingModel(application: Application) : AndroidViewModel(application) {
         try {
             val device = context.getSystemService(BluetoothManager::class.java).adapter.getRemoteDevice(address)
             pendingAddress = address
-            message = "페어링 확인을 기다립니다. 양쪽 기기에서 요청을 확인해 주세요."
+            message = "페어링 확인을 기다리고 있어요. 양쪽 기기에서 요청을 확인해 주세요."
             when (device.bondState) {
                 BluetoothDevice.BOND_BONDED -> complete(address)
-                BluetoothDevice.BOND_NONE -> if (!device.createBond()) cancel("페어링을 시작하지 못했습니다. 다시 시도해 주세요.")
+                BluetoothDevice.BOND_NONE -> if (!device.createBond()) cancel("페어링을 시작하지 못했어요. 다시 시도해 주세요.")
             }
         } catch (_: SecurityException) { cancel("주변 기기 권한을 확인해 주세요.")
         } catch (e: Exception) {
             android.util.Log.e("BridgePairing", "Could not start bonding", e)
-            cancel("페어링할 수 없습니다. 블루투스와 주변 기기 권한을 확인해 주세요.")
+            cancel("페어링할 수 없어요. 블루투스와 주변 기기 권한을 확인해 주세요.")
         }
     }
 

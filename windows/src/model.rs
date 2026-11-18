@@ -220,13 +220,13 @@ impl Alerts {
         if level <= settings.low_threshold && charging != Some(true) && !self.low {
             self.low = true;
             if settings.notifications {
-                return Some("배터리가 부족합니다.");
+                return Some("배터리가 부족해요.");
             }
         }
         if level == 100 && !self.full {
             self.full = true;
             if settings.full_notifications {
-                return Some("배터리가 완전히 충전되었습니다.");
+                return Some("배터리가 완전히 충전됐어요.");
             }
         }
         None
@@ -508,8 +508,8 @@ mod tests {
     #[test]
     fn simultaneous_notices_share_one_balloon() {
         let notices = vec![
-            ("휴대폰".to_string(), "배터리가 부족합니다. 현재 15%".to_string()),
-            ("태블릿".to_string(), "배터리가 완전히 충전되었습니다. 현재 100%".to_string()),
+            ("휴대폰".to_string(), "배터리가 부족해요. 현재 15%".to_string()),
+            ("태블릿".to_string(), "배터리가 완전히 충전됐어요. 현재 100%".to_string()),
         ];
         let (title, message) = notice_balloon(&notices).unwrap();
         assert_eq!(title, "NearLink · 배터리 알림 2건");

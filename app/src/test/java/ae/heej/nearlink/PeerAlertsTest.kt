@@ -40,6 +40,6 @@ class PeerAlertsTest {
         ))
         assertEquals("업무폰 85% · 태블릿 40%", snapshot.receiverSummary())
         assertEquals("기기 1대의 연결을 기다리고 있어요.", BridgeSnapshot(peers = mapOf("c" to snapshot.peers["c"]!!)).receiverSummary())
-        assertEquals("연결한 기기가 없습니다.", BridgeSnapshot().receiverSummary())
+        assertEquals("연결한 기기가 없어요.", BridgeSnapshot().receiverSummary())
     }
 }
