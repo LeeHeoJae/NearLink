@@ -1,4 +1,7 @@
-use crate::config::{SavedPeer, Settings};
+use crate::{
+    config::{SavedPeer, Settings},
+    i18n::{t, tf, tn},
+};
 use std::{
     collections::{BTreeMap, VecDeque},
     sync::{Arc, Mutex},
@@ -26,11 +29,11 @@ pub enum State {
 impl State {
     pub fn text(self) -> &'static str {
         match self {
-            Self::Connecting => "연결 중",
-            Self::Reading => "배터리 확인 중",
-            Self::Connected => "연결됨",
-            Self::Retrying => "재연결 대기",
-            Self::Stopped => "중지됨",
+            Self::Connecting => t("Connecting"),
+            Self::Reading => t("Reading battery"),
+            Self::Connected => t("Connected"),
+            Self::Retrying => t("Waiting to reconnect"),
+            Self::Stopped => t("Stopped"),
         }
     }
 }
@@ -55,14 +58,14 @@ fn age_seconds(time: Option<SystemTime>) -> Option<u64> {
     time.map(|t| t.elapsed().unwrap_or_default().as_secs())
 }
 
-/// "N초/분/시간 전", then "어제" and "N일 전" so old values never read as hours.
+/// "N sec/min/hr ago", then "Yesterday" and "N days ago" so old values never read as hours.
 pub fn age_label(seconds: u64) -> String {
     match seconds {
-        0..60 => format!("{seconds}초 전"),
-        60..3600 => format!("{}분 전", seconds / 60),
-        3600..86_400 => format!("{}시간 전", seconds / 3600),
-        86_400..172_800 => "어제".into(),
-        _ => format!("{}일 전", seconds / 86_400),
+        0..60 => tf("{0} sec ago", &[&seconds]),
+        60..3600 => tf("{0} min ago", &[&(seconds / 60)]),
+        3600..86_400 => tf("{0} hr ago", &[&(seconds / 3600)]),
+        86_400..172_800 => t("Yesterday").into(),
+        _ => tf("{0} days ago", &[&(seconds / 86_400)]),
     }
 }
 
@@ -88,18 +91,18 @@ impl Peer {
     pub fn battery_text(&self) -> String {
         self.level
             .map(|v| format!("{v}%"))
-            .unwrap_or_else(|| "확인 전".into())
+            .unwrap_or_else(|| t("Unknown").into())
     }
     pub fn charge_text(&self) -> &'static str {
         match (self.charging, self.plugged) {
-            (Some(true), _) => "충전 중",
-            (Some(false), Some(true)) => "전원 연결됨",
-            (Some(false), _) => "충전 중 아님",
-            _ => "확인 전",
+            (Some(true), _) => t("Charging"),
+            (Some(false), Some(true)) => t("Plugged in"),
+            (Some(false), _) => t("Not charging"),
+            _ => t("Unknown"),
         }
     }
     pub fn age_text(&self) -> String {
-        age_seconds(self.updated).map_or_else(|| "수신 전".into(), age_label)
+        age_seconds(self.updated).map_or_else(|| t("Not received yet").into(), age_label)
     }
 
     /// Battery notifications are quiet while the value is unchanged. Age alone is a
@@ -120,15 +123,15 @@ impl Peer {
     }
     pub fn status_text(&self) -> String {
         let state = match self.state {
-            State::Retrying => "연결 끊김 · 재연결 대기",
-            State::Stopped => "수신 중지됨",
-            State::Connected => "연결됨 · 배터리 수신 중",
+            State::Retrying => t("Disconnected · Waiting to reconnect"),
+            State::Stopped => t("Receiving stopped"),
+            State::Connected => t("Connected · Receiving battery"),
             _ => self.state.text(),
         };
         if self.stale() {
-            format!("{state} · 오래된 값")
+            tf("{0} · Outdated value", &[&state])
         } else if self.updated.is_some() && self.state != State::Connected {
-            format!("{state} · 마지막 값")
+            tf("{0} · Last value", &[&state])
         } else {
             state.into()
         }
@@ -136,17 +139,17 @@ impl Peer {
     /// Compact second line of a device row: connection, then how current the value is.
     pub fn row_status(&self) -> String {
         let state = match self.state {
-            State::Retrying => "연결 끊김 · 재연결 대기",
-            State::Stopped => "수신 중지됨",
+            State::Retrying => t("Disconnected · Waiting to reconnect"),
+            State::Stopped => t("Receiving stopped"),
             _ => self.state.text(),
         };
         let age = self.age_text();
         if self.updated.is_none() {
             format!("{state} · {age}")
         } else if self.stale() {
-            format!("{state} · 오래된 값 {age}")
+            tf("{0} · Outdated value {1}", &[&state, &age])
         } else if self.state != State::Connected {
-            format!("{state} · 마지막 값 {age}")
+            tf("{0} · Last value {1}", &[&state, &age])
         } else {
             format!("{state} · {age}")
         }
@@ -179,20 +182,22 @@ impl Peer {
     /// Short visible charging label; "not charging" is left to the accessible text.
     pub fn charge_badge(&self) -> &'static str {
         match (self.charging, self.plugged) {
-            (Some(true), _) => "충전 중",
-            (Some(false), Some(true)) => "전원 연결됨",
+            (Some(true), _) => t("Charging"),
+            (Some(false), Some(true)) => t("Plugged in"),
             _ => "",
         }
     }
 
     pub fn accessible_text(&self) -> String {
-        format!(
-            "{} · {} · {} · {} · 마지막 수신 {}",
-            self.saved.label(),
-            self.battery_text(),
-            self.charge_text(),
-            self.status_text(),
-            self.age_text()
+        tf(
+            "{0} · {1} · {2} · {3} · Last received {4}",
+            &[
+                &self.saved.label(),
+                &self.battery_text(),
+                &self.charge_text(),
+                &self.status_text(),
+                &self.age_text(),
+            ],
         )
     }
 }
@@ -220,13 +225,13 @@ impl Alerts {
         if level <= settings.low_threshold && charging != Some(true) && !self.low {
             self.low = true;
             if settings.notifications {
-                return Some("배터리가 부족해요.");
+                return Some(t("Battery is low."));
             }
         }
         if level == 100 && !self.full {
             self.full = true;
             if settings.full_notifications {
-                return Some("배터리가 완전히 충전됐어요.");
+                return Some(t("Battery is fully charged."));
             }
         }
         None
@@ -303,17 +308,17 @@ impl Model {
             && let Some(text) = peer.alerts.update(level, charging, &self.settings)
         {
             self.notices
-                .push_back((peer.saved.label().into(), format!("{text} 현재 {level}%")));
+                .push_back((peer.saved.label().into(), tf("{0} Currently {1}%", &[&text, &level])));
         }
     }
 }
 
 /// Joins whole lines within `limit` UTF-16 units (Win32 buffers exclude the NUL).
-/// Lines that do not fit are summarized as "외 N{unit}" rather than cut mid-line.
-pub fn fit_lines(header: &str, lines: &[String], unit: &str, limit: usize) -> String {
+/// Lines that do not fit are summarized by `more` (for example "and 2 more") rather than cut mid-line.
+pub fn fit_lines(header: &str, lines: &[String], more: &dyn Fn(usize) -> String, limit: usize) -> String {
     let len = |s: &str| s.encode_utf16().count();
     let separator = |text: &str| if text.is_empty() { "" } else { "\n" };
-    let summary = |text: &str, count: usize| format!("{}외 {count}{unit}", separator(text));
+    let summary = |text: &str, count: usize| format!("{}{}", separator(text), more(count));
     let mut text = header.to_string();
     for (index, line) in lines.iter().enumerate() {
         let remaining = lines.len() - index - 1;
@@ -342,8 +347,17 @@ pub fn notice_balloon(notices: &[(String, String)]) -> Option<(String, String)> 
                 .map(|(title, message)| format!("{title}: {message}"))
                 .collect();
             Some((
-                format!("NearLink · 배터리 알림 {}건", notices.len()),
-                fit_lines("", &lines, "건", 255),
+                tn(
+                    "NearLink · {0} battery alert",
+                    "NearLink · {0} battery alerts",
+                    notices.len(),
+                ),
+                fit_lines(
+                    "",
+                    &lines,
+                    &|n| tn("and {0} more alert", "and {0} more alerts", n),
+                    255,
+                ),
             ))
         }
     }
@@ -352,45 +366,46 @@ pub fn notice_balloon(notices: &[(String, String)]) -> Option<(String, String)> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::i18n::{Lang, with_lang};
     #[test]
     fn freshness_is_distinct_from_connection_and_always_exposed_as_text() {
-        let mut peer = Peer::new(SavedPeer::new(1, "태블릿".into(), false));
+        let mut peer = Peer::new(SavedPeer::new(1, "Tablet".into(), false));
         assert!(!peer.stale());
-        assert!(peer.accessible_text().contains("수신 전"));
+        assert!(peer.accessible_text().contains(t("Not received yet")));
         peer.level = Some(73);
         peer.state = State::Connected;
         peer.updated = Some(SystemTime::now() - std::time::Duration::from_secs(901));
-        assert!(peer.status_text().contains("오래된 값"));
-        assert!(peer.status_text().contains("연결됨"));
+        assert!(peer.status_text().contains("Outdated value"));
+        assert!(peer.status_text().contains(t("Connected")));
         peer.state = State::Retrying;
-        assert!(peer.status_text().contains("연결 끊김"));
+        assert!(peer.status_text().contains("Disconnected"));
         peer.updated = Some(SystemTime::now());
-        assert!(peer.status_text().contains("마지막 값"));
+        assert!(peer.status_text().contains("Last value"));
         peer.state = State::Stopped;
-        assert!(peer.accessible_text().contains("수신 중지됨"));
+        assert!(peer.accessible_text().contains(t("Receiving stopped")));
     }
     #[test]
     fn row_status_is_compact_but_keeps_freshness_explicit() {
-        let mut peer = Peer::new(SavedPeer::new(1, "태블릿".into(), false));
-        assert_eq!(peer.row_status(), "연결 중 · 수신 전");
+        let mut peer = Peer::new(SavedPeer::new(1, "Tablet".into(), false));
+        assert_eq!(peer.row_status(), "Connecting · Not received yet");
         assert!(peer.muted());
         peer.level = Some(73);
         peer.state = State::Connected;
         peer.updated = Some(SystemTime::now());
-        assert!(peer.row_status().starts_with("연결됨 · "));
+        assert!(peer.row_status().starts_with("Connected · "));
         assert!(!peer.muted() && !peer.needs_attention());
         peer.updated = Some(SystemTime::now() - std::time::Duration::from_secs(901));
-        assert!(peer.row_status().contains("오래된 값"));
+        assert!(peer.row_status().contains("Outdated value"));
         assert!(peer.needs_attention());
         peer.state = State::Retrying;
         peer.updated = Some(SystemTime::now());
-        assert!(peer.row_status().contains("연결 끊김"));
-        assert!(peer.row_status().contains("마지막 값"));
+        assert!(peer.row_status().contains("Disconnected"));
+        assert!(peer.row_status().contains("Last value"));
         assert!(peer.muted() && peer.needs_attention());
     }
     #[test]
     fn battery_glyph_follows_level_and_charging() {
-        let mut peer = Peer::new(SavedPeer::new(1, "태블릿".into(), false));
+        let mut peer = Peer::new(SavedPeer::new(1, "Tablet".into(), false));
         assert_eq!(peer.battery_glyph(), '\u{E996}');
         peer.level = Some(0);
         assert_eq!(peer.battery_glyph(), '\u{EBA0}');
@@ -400,13 +415,13 @@ mod tests {
         assert_eq!(peer.battery_glyph(), '\u{EBAA}');
         peer.charging = Some(true);
         assert_eq!(peer.battery_glyph(), '\u{EBB5}');
-        assert_eq!(peer.charge_badge(), "충전 중");
+        assert_eq!(peer.charge_badge(), t("Charging"));
         peer.charging = Some(false);
         assert_eq!(peer.charge_badge(), "");
     }
     #[test]
     fn recent_session_check_keeps_an_unchanged_reading_current() {
-        let mut peer = Peer::new(SavedPeer::new(1, "태블릿".into(), false));
+        let mut peer = Peer::new(SavedPeer::new(1, "Tablet".into(), false));
         peer.level = Some(73);
         peer.state = State::Connected;
         peer.updated = Some(SystemTime::now() - std::time::Duration::from_secs(3600));
@@ -422,7 +437,7 @@ mod tests {
     #[test]
     fn verification_only_applies_to_connected_devices() {
         let mut settings = Settings::default();
-        settings.peers.push(SavedPeer::new(7, "휴대폰".into(), false));
+        settings.peers.push(SavedPeer::new(7, "Phone".into(), false));
         let mut model = Model::new(settings);
         model.verified(7);
         assert!(model.peers[&7].verified.is_none());
@@ -432,11 +447,16 @@ mod tests {
     }
     #[test]
     fn ages_switch_to_days_after_a_day() {
-        assert_eq!(age_label(59), "59초 전");
-        assert_eq!(age_label(3599), "59분 전");
-        assert_eq!(age_label(86_399), "23시간 전");
-        assert_eq!(age_label(86_400), "어제");
-        assert_eq!(age_label(3 * 86_400), "3일 전");
+        assert_eq!(age_label(59), "59 sec ago");
+        assert_eq!(age_label(3599), "59 min ago");
+        assert_eq!(age_label(86_399), "23 hr ago");
+        assert_eq!(age_label(86_400), t("Yesterday"));
+        assert_eq!(age_label(3 * 86_400), "3 days ago");
+        with_lang(Lang::Ko, || {
+            assert_eq!(age_label(59), "59초 전");
+            assert_eq!(age_label(86_400), "어제");
+            assert_eq!(age_label(3 * 86_400), "3일 전");
+        });
     }
     #[test]
     fn alerts_do_not_repeat_and_rearm_with_hysteresis() {
@@ -459,7 +479,7 @@ mod tests {
         let mut settings = Settings::default();
         settings
             .peers
-            .push(SavedPeer::new(7, "휴대폰".into(), false));
+            .push(SavedPeer::new(7, "Phone".into(), false));
         let mut model = Model::new(settings);
         model.reading(7, Some(15), Some(false), Some(false), false);
         assert_eq!(model.peers[&7].state, State::Connecting);
@@ -495,26 +515,38 @@ mod tests {
 
     #[test]
     fn fit_lines_keeps_whole_lines_and_summarizes_the_rest() {
-        let lines: Vec<String> = (0..4).map(|i| format!("기기{i} 50% · 연결됨")).collect();
-        let text = fit_lines("NearLink", &lines, "대", 41);
-        assert_eq!(text.encode_utf16().count(), 41);
-        assert_eq!(text, "NearLink\n기기0 50% · 연결됨\n기기1 50% · 연결됨\n외 2대");
+        let lines: Vec<String> = (0..4).map(|i| format!("Dev{i} 50% · Connected")).collect();
+        let more = |n| tn("and {0} more alert", "and {0} more alerts", n);
+        let text = fit_lines("NearLink", &lines, &more, 68);
+        assert_eq!(text.encode_utf16().count(), 68);
         assert_eq!(
-            fit_lines("NearLink", &lines[..1], "대", 40),
-            "NearLink\n기기0 50% · 연결됨"
+            text,
+            "NearLink\nDev0 50% · Connected\nDev1 50% · Connected\nand 2 more alerts"
         );
+        assert_eq!(
+            fit_lines("NearLink", &lines[..1], &more, 40),
+            "NearLink\nDev0 50% · Connected"
+        );
+        with_lang(Lang::Ko, || {
+            let lines: Vec<String> = (0..4).map(|i| format!("기기{i} 50% · 연결됨")).collect();
+            let text = fit_lines("NearLink", &lines, &more, 41);
+            assert_eq!(text, "NearLink\n기기0 50% · 연결됨\n기기1 50% · 연결됨\n외 2건");
+        });
     }
 
     #[test]
     fn simultaneous_notices_share_one_balloon() {
         let notices = vec![
-            ("휴대폰".to_string(), "배터리가 부족해요. 현재 15%".to_string()),
-            ("태블릿".to_string(), "배터리가 완전히 충전됐어요. 현재 100%".to_string()),
+            ("Phone".to_string(), "Battery is low. Currently 15%".to_string()),
+            ("Tablet".to_string(), "Battery is fully charged. Currently 100%".to_string()),
         ];
         let (title, message) = notice_balloon(&notices).unwrap();
-        assert_eq!(title, "NearLink · 배터리 알림 2건");
-        assert!(message.contains("휴대폰: ") && message.contains("태블릿: "));
-        assert_eq!(notice_balloon(&notices[..1]).unwrap().0, "NearLink · 휴대폰");
+        assert_eq!(title, "NearLink · 2 battery alerts");
+        assert!(message.contains("Phone: ") && message.contains("Tablet: "));
+        assert_eq!(notice_balloon(&notices[..1]).unwrap().0, "NearLink · Phone");
+        with_lang(Lang::Ko, || {
+            assert_eq!(notice_balloon(&notices).unwrap().0, "NearLink · 배터리 알림 2건");
+        });
         assert!(notice_balloon(&[]).is_none());
     }
 }

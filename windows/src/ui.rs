@@ -3,6 +3,7 @@
 use crate::{
     ble::{Engine, Wake},
     config::{self, SavedPeer},
+    i18n::{pw, t, tf, tn},
     model::{Model, Peer, Shared, State, notice_balloon},
     theme::{self, Theme},
     tray::Artwork,
@@ -138,8 +139,8 @@ pub fn fatal(message: &str) {
 /// Discovery rows say when a device is already on this PC's list, so it is not added twice.
 fn discovered_label(model: &Model, peer: &crate::model::Discovered) -> String {
     match model.peers.get(&peer.address) {
-        Some(saved) if saved.saved.enabled => format!("{} · 이미 등록됨", peer.name),
-        Some(_) => format!("{} · 등록됨, 수신 중지", peer.name),
+        Some(saved) if saved.saved.enabled => tf("{0} · Already added", &[&peer.name]),
+        Some(_) => tf("{0} · Added, receiving stopped", &[&peer.name]),
         None => peer.name.clone(),
     }
 }
@@ -202,7 +203,7 @@ pub fn run() -> Result<(), String> {
     unsafe {
         let preview = theme::preview();
         if preview && !std::env::args().any(|a| a == "--data-dir") {
-            return Err("미리 보기에는 별도 --data-dir 폴더를 지정해 주세요.".into());
+            return Err(t("Preview needs a separate --data-dir folder.").into());
         }
         let directory = config::directory()?;
         std::fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
@@ -519,7 +520,7 @@ unsafe extern "system" fn window_proc(
                 markup.dwFlags = EMF_CENTERED;
                 copy_wide(
                     &mut markup.szMarkup,
-                    "연결한 기기가 없어요.\nAndroid NearLink에서 연결 준비를 누른 뒤 기기를 추가해 주세요.",
+                    t("No connected devices.\nOn Android NearLink, tap Prepare to connect, then add the device."),
                 );
                 return LRESULT(1);
             }
@@ -698,7 +699,7 @@ impl App {
         let list = self.control(
             parent,
             WC_LISTVIEWW,
-            "기기 배터리",
+            t("Device Battery"),
             WS_TABSTOP
                 | WINDOW_STYLE(
                     LVS_REPORT
@@ -715,7 +716,7 @@ impl App {
             WPARAM(0),
             LPARAM((LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_LABELTIP) as isize),
         );
-        let mut name = wide("기기 배터리");
+        let mut name = wide(t("Device Battery"));
         let column = LVCOLUMNW {
             mask: LVCF_TEXT | LVCF_WIDTH,
             pszText: windows::core::PWSTR(name.as_mut_ptr()),
@@ -792,7 +793,7 @@ impl App {
                 WS_EX_TOOLWINDOW | WS_EX_CONTROLPARENT,
                 CLASS,
                 if self.preview {
-                    w!("NearLink · 미리 보기")
+                    pw("NearLink · Preview")
                 } else {
                     w!("NearLink")
                 },
@@ -811,9 +812,9 @@ impl App {
             self.update_font();
             self.resize_rows();
             self.quick_list = self.device_list(self.quick);
-            self.control(self.quick,w!("STATIC"),"연결한 기기가 없어요.\r\nAndroid NearLink에서 연결 준비를 누른 뒤 기기를 추가해 주세요.",WINDOW_STYLE(SS_CENTER),305);
-            self.button(self.quick, "기기 추가(&A)", ADD);
-            self.button(self.quick, "상세 설정(&O)", OPEN_MAIN);
+            self.control(self.quick,w!("STATIC"),t("No connected devices.\r\nOn Android NearLink, tap Prepare to connect, then add the device."),WINDOW_STYLE(SS_CENTER),305);
+            self.button(self.quick, t("&Add device"), ADD);
+            self.button(self.quick, t("&Open details"), OPEN_MAIN);
         }
         self.theme.window(self.quick);
         let count = self.model.lock().unwrap().peers.len().clamp(1, 6) as i32;
@@ -860,10 +861,10 @@ impl App {
             return;
         };
         for (id, label) in [
-            (RETRY, "다시 연결(&R)"),
-            (STOP, "수신 중지(&S)"),
-            (ALIAS, "별명(&N)"),
-            (FORGET, "목록에서 제거(&D)"),
+            (RETRY, t("&Reconnect")),
+            (STOP, t("&Stop receiving")),
+            (ALIAS, t("&Nickname")),
+            (FORGET, t("Re&move from list")),
         ] {
             let _ = AppendMenuW(menu, MF_STRING, id, PCWSTR(wide(label).as_ptr()));
         }
@@ -1317,7 +1318,7 @@ impl App {
             WS_EX_CONTROLPARENT,
             CLASS,
             if self.preview {
-                w!("NearLink · 미리 보기")
+                pw("NearLink · Preview")
             } else {
                 w!("NearLink")
             },
@@ -1337,30 +1338,30 @@ impl App {
         self.control(
             self.main,
             w!("STATIC"),
-            "기기 배터리",
+            t("Device Battery"),
             WINDOW_STYLE::default(),
             300,
         );
         self.control(
             self.main,
             w!("STATIC"),
-            "가까이 있는 휴대폰과 태블릿의 배터리를 확인해 주세요.",
+            t("Check the battery of nearby phones and tablets."),
             WINDOW_STYLE::default(),
             301,
         );
         for (text, id) in [
-            ("기기 추가(&A)", ADD),
-            ("다시 연결(&R)", RETRY),
-            ("수신 중지(&S)", STOP),
-            ("별명(&N)", ALIAS),
-            ("목록에서 제거(&D)", FORGET),
-            ("설정(&O)", SETTINGS),
-            ("기기 동작(&M)", ACTIONS),
+            (t("&Add device"), ADD),
+            (t("&Reconnect"), RETRY),
+            (t("&Stop receiving"), STOP),
+            (t("&Nickname"), ALIAS),
+            (t("Re&move from list"), FORGET),
+            (t("S&ettings"), SETTINGS),
+            (t("Device a&ctions"), ACTIONS),
         ] {
             self.button(self.main, text, id);
         }
         self.list = self.device_list(self.main);
-        self.control(self.main,w!("STATIC"),"연결한 기기가 없어요.\r\nAndroid NearLink에서 연결 준비를 누른 뒤 기기를 추가해 주세요.",WINDOW_STYLE(SS_CENTER),305);
+        self.control(self.main,w!("STATIC"),t("No connected devices.\r\nOn Android NearLink, tap Prepare to connect, then add the device."),WINDOW_STYLE(SS_CENTER),305);
         self.theme.window(self.main);
         send(
             GetDlgItem(Some(self.main), 300)?,
@@ -1373,9 +1374,9 @@ impl App {
             self.main,
             w!("STATIC"),
             if self.preview {
-                "미리 보기 · 예시 기기, BLE 수신 안 함"
+                t("Preview · Sample devices, no BLE reception")
             } else {
-                "창을 닫아도 트레이에서 수신해요."
+                t("NearLink keeps receiving from the tray when you close this window.")
             },
             WINDOW_STYLE::default(),
             304,
@@ -1532,12 +1533,12 @@ impl App {
             );
         }
         let detail = peer.map(|peer| {
-            if peer.stale() { "15분 이상 갱신되지 않은 값이에요. 배터리가 변하지 않으면 수신 시각이 오래될 수 있어요.".into() }
-            else if peer.confirmed_unchanged() { "배터리 변화가 없어 수신 시각은 오래됐지만, 최근 연결 확인에 성공해 현재 값이에요.".into() }
+            if peer.stale() { t("This value hasn't been updated for over 15 minutes. If the battery doesn't change, the received time can get old.").into() }
+            else if peer.confirmed_unchanged() { t("The battery hasn't changed, so the received time is old, but a recent connection check succeeded and this is the current value.").into() }
             else if !peer.detail.is_empty() { peer.detail.clone() }
-            else if peer.state != State::Connected && peer.updated.is_some() { "마지막으로 받은 잔량이에요. 현재 값과 다를 수 있어요.".into() }
-            else { "배터리 값이 바뀌면 자동으로 갱신해요. 마지막 수신 시각은 배터리 데이터 수신 기준이에요.".into() }
-        }).unwrap_or_else(|| if model.message.is_empty() { "기기를 선택하면 연결 상태를 확인할 수 있어요.".into() } else { model.message.clone() });
+            else if peer.state != State::Connected && peer.updated.is_some() { t("This is the last level received and may differ from the current value.").into() }
+            else { t("The value updates automatically when the battery changes. The last received time is based on battery data reception.").into() }
+        }).unwrap_or_else(|| if model.message.is_empty() { t("Select a device to see its connection status.").into() } else { model.message.clone() });
         set_text_if_changed(self.info, &detail);
     }
 
@@ -1741,9 +1742,9 @@ impl App {
             self.update_font();
         }
         let title = match kind {
-            Kind::Add => "기기 추가",
-            Kind::Alias(_) => "기기 별명",
-            Kind::Settings => "설정",
+            Kind::Add => t("Add device"),
+            Kind::Alias(_) => t("Device nickname"),
+            Kind::Settings => t("Settings"),
         };
         let height = if matches!(kind, Kind::Add) { 450 } else { 300 };
         let hwnd = match CreateWindowExW(
@@ -1774,9 +1775,7 @@ impl App {
                 self.place(info, 20, 18, 545, 52);
                 let _ = SetWindowTextW(
                     info,
-                    w!(
-                        "Android NearLink에서 연결 준비를 눌러 주세요.\r\n검색된 기기를 선택하고 연결하면 페어링을 진행할게요."
-                    ),
+                    pw("On Android NearLink, tap Prepare to connect.\r\nSelect the discovered device and connect to start pairing."),
                 );
                 list = self.control(
                     hwnd,
@@ -1789,30 +1788,30 @@ impl App {
                     LIST,
                 );
                 self.place(list, 20, 82, 545, 190);
-                self.place(self.button(hwnd, "다시 검색(&R)", SEARCH), 20, 288, 122, 34);
+                self.place(self.button(hwnd, t("&Rescan"), SEARCH), 20, 288, 122, 34);
                 self.place(
-                    self.button(hwnd, "블루투스 설정(&B)", BT_SETTINGS),
+                    self.button(hwnd, t("&Bluetooth settings"), BT_SETTINGS),
                     150,
                     288,
                     162,
                     34,
                 );
                 self.place(
-                    self.button(hwnd, "선택한 기기 연결(&C)", CONNECT),
+                    self.button(hwnd, t("&Connect selected device"), CONNECT),
                     320,
                     288,
                     245,
                     34,
                 );
                 let status =
-                    self.control(hwnd, w!("STATIC"), "검색 중…", WINDOW_STYLE::default(), 301);
+                    self.control(hwnd, w!("STATIC"), t("Searching…"), WINDOW_STYLE::default(), 301);
                 self.place(status, 20, 335, 545, 65);
             }
             Kind::Alias(address) => {
                 self.place(info, 20, 20, 545, 50);
                 let _ = SetWindowTextW(
                     info,
-                    w!("기기 별명(&N)\r\n비워 두면 블루투스 기기 이름을 사용해요."),
+                    pw("&Nickname\r\nLeave it empty to use the Bluetooth device name."),
                 );
                 input = self.control(
                     hwnd,
@@ -1826,17 +1825,17 @@ impl App {
                     let _ = SetWindowTextW(input, PCWSTR(wide(&peer.saved.alias).as_ptr()));
                 }
                 self.place(input, 20, 82, 545, 32);
-                self.place(self.button(hwnd, "저장(&S)", SAVE), 350, 172, 100, 34);
-                self.place(self.button(hwnd, "취소", CANCEL), 465, 172, 100, 34);
+                self.place(self.button(hwnd, t("&Save"), SAVE), 350, 172, 100, 34);
+                self.place(self.button(hwnd, t("Cancel"), CANCEL), 465, 172, 100, 34);
             }
             Kind::Settings => {
                 self.place(info, 20, 16, 545, 24);
-                let _ = SetWindowTextW(info, w!("알림과 자동 시작"));
+                let _ = SetWindowTextW(info, pw("Notifications and startup"));
                 let settings = &self.model.lock().unwrap().settings;
                 let alerts = self.control(
                     hwnd,
                     w!("BUTTON"),
-                    "배터리 부족 알림(&L)",
+                    t("&Low battery alert"),
                     WS_TABSTOP | WINDOW_STYLE(BS_AUTOCHECKBOX as u32),
                     ALERTS,
                 );
@@ -1853,7 +1852,7 @@ impl App {
                 let unit = self.control(
                     hwnd,
                     w!("STATIC"),
-                    "% 이하 · 충전 중에는 알리지 않음",
+                    t("% or below · Not while charging"),
                     WINDOW_STYLE::default(),
                     301,
                 );
@@ -1861,7 +1860,7 @@ impl App {
                 let full = self.control(
                     hwnd,
                     w!("BUTTON"),
-                    "100% 충전 완료 알림(&F)",
+                    t("Notify when &fully charged (100%)"),
                     WS_TABSTOP | WINDOW_STYLE(BS_AUTOCHECKBOX as u32),
                     FULL,
                 );
@@ -1870,14 +1869,14 @@ impl App {
                 let startup = self.control(
                     hwnd,
                     w!("BUTTON"),
-                    "Windows 로그인 시 트레이에서 시작(&W)",
+                    t("Start in the tray when I sign in to &Windows"),
                     WS_TABSTOP | WINDOW_STYLE(BS_AUTOCHECKBOX as u32),
                     STARTUP,
                 );
                 self.place(startup, 20, 134, 510, 28);
                 set_checked(startup, startup_enabled());
-                self.place(self.button(hwnd, "저장(&S)", SAVE), 350, 202, 100, 34);
-                self.place(self.button(hwnd, "취소", CANCEL), 465, 202, 100, 34);
+                self.place(self.button(hwnd, t("&Save"), SAVE), 350, 202, 100, 34);
+                self.place(self.button(hwnd, t("Cancel"), CANCEL), 465, 202, 100, 34);
             }
         }
         let scan = matches!(kind, Kind::Add);
@@ -1961,16 +1960,17 @@ impl App {
             selected >= 0 && (selected as usize) < model.discovered.len(),
         );
         let status = if model.scanning {
-            format!(
-                "기기를 찾고 있어요… {}대 발견 · 검색은 15초 후 끝나요.",
-                model.discovered.len()
+            tf(
+                "Looking for devices… {0} found · The search ends in 15 seconds.",
+                &[&model.discovered.len()],
             )
         } else if !model.message.is_empty() {
             model.message.clone()
         } else {
-            format!(
-                "{}대를 찾았어요. 연결할 기기를 선택해 주세요.",
-                model.discovered.len()
+            tn(
+                "Found {0} device. Select a device to connect.",
+                "Found {0} devices. Select a device to connect.",
+                model.discovered.len(),
             )
         };
         set_text_if_changed(
@@ -2006,7 +2006,7 @@ impl App {
             if settings.peers.len() >= 16 {
                 warn(
                     dialog.hwnd,
-                    "최대 16대까지 등록할 수 있어요. 사용하지 않는 기기를 먼저 제거해 주세요.",
+                    t("You can add up to 16 devices. Remove an unused device first."),
                 );
                 return;
             }
@@ -2072,7 +2072,7 @@ impl App {
             Kind::Settings => {
                 let threshold = control_text(dialog.input).trim().parse::<u8>();
                 let Ok(threshold @ 1..=90) = threshold else {
-                    warn(dialog.hwnd, "부족 알림 기준은 1~90 사이의 숫자를 입력해 주세요.");
+                    warn(dialog.hwnd, t("Enter a number from 1 to 90 for the low battery threshold."));
                     let _ = SetFocus(Some(dialog.input));
                     return;
                 };
@@ -2121,13 +2121,14 @@ impl App {
             .find(|peer| peer.address == address)
             .map(|peer| peer.label().to_string())
             .unwrap_or_default();
-        let message = format!(
-            "{label} 기기를 이 PC의 목록에서 제거할까요?\nWindows 페어링은 유지돼요. Android의 송신도 끝내려면 상대 앱에서 연결을 중지해 주세요."
+        let message = tf(
+            "Remove {0} from this PC's list?\nWindows pairing is kept. To also stop Android from sending, stop the connection in the Android app.",
+            &[&label],
         );
         if MessageBoxW(
             Some(self.main),
             PCWSTR(wide(&message).as_ptr()),
-            w!("기기 제거"),
+            pw("Remove device"),
             MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2,
         ) != IDYES
         {
@@ -2275,9 +2276,9 @@ impl App {
         let model = self.model.lock().unwrap();
         let addresses: Vec<_> = model.peers.keys().copied().collect();
         if let Ok(display) = CreatePopupMenu() {
-            let _ = AppendMenuW(display, MF_STRING, 1000, w!("배터리 윤곽선 (기본)"));
+            let _ = AppendMenuW(display, MF_STRING, 1000, pw("Battery outline (default)"));
             for (index, peer) in model.peers.values().enumerate() {
-                let label = format!("{} 잔량 숫자", peer.saved.label().replace('&', "&&"));
+                let label = tf("Show {0} level as number", &[&peer.saved.label().replace('&', "&&")]);
                 let _ = AppendMenuW(
                     display,
                     MF_STRING,
@@ -2297,7 +2298,7 @@ impl App {
                 selected,
                 MF_BYCOMMAND.0,
             );
-            if AppendMenuW(menu, MF_POPUP, display.0 as usize, w!("트레이 표시(&T)")).is_err()
+            if AppendMenuW(menu, MF_POPUP, display.0 as usize, pw("&Tray icon")).is_err()
             {
                 let _ = DestroyMenu(display);
             }
@@ -2308,7 +2309,7 @@ impl App {
                 menu,
                 MF_STRING | MF_DISABLED,
                 10,
-                w!("연결한 기기가 없어요"),
+                pw("No connected devices"),
             );
         }
         for (index, peer) in model.peers.values().enumerate() {
@@ -2323,10 +2324,10 @@ impl App {
         }
         drop(model);
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
-        let _ = AppendMenuW(menu, MF_STRING, 1, w!("기기 배터리 열기(&O)"));
-        let _ = AppendMenuW(menu, MF_STRING, 2, w!("기기 추가(&A)"));
-        let _ = AppendMenuW(menu, MF_STRING, 4, w!("설정(&S)"));
-        let _ = AppendMenuW(menu, MF_STRING, 3, w!("종료(&X)"));
+        let _ = AppendMenuW(menu, MF_STRING, 1, pw("&Open Device Battery"));
+        let _ = AppendMenuW(menu, MF_STRING, 2, pw("&Add device"));
+        let _ = AppendMenuW(menu, MF_STRING, 4, pw("&Settings"));
+        let _ = AppendMenuW(menu, MF_STRING, 3, pw("E&xit"));
         let mut point = POINT::default();
         let _ = GetCursorPos(&mut point);
         let _ = SetForegroundWindow(self.host);
@@ -2397,13 +2398,13 @@ fn preview_model(model: &mut Model) {
         ),
         (
             3,
-            "업무용 휴대폰",
+            t("Work phone"),
             Some(18),
             Some(false),
             State::Retrying,
             420,
         ),
-        (4, "아직 수신하지 않은 기기", None, None, State::Stopped, 0),
+        (4, t("Device not received yet"), None, None, State::Stopped, 0),
     ] {
         let mut saved = SavedPeer::new(address, name.into(), false);
         saved.enabled = state != State::Stopped;

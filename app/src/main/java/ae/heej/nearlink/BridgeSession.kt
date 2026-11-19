@@ -97,8 +97,6 @@ object BridgeSession {
         }
     }
 
-    internal const val STOP_UNCONFIRMED = "이 기기는 중지했어요. 상대 기기의 중지 여부를 확인하지 못했어요. 상대 기기에서도 직접 중지해 주세요."
-
     internal fun stopNotice(context: Context): String? = prefs(context).getString("stop_notice", null)
 
     fun stop(context: Context) {

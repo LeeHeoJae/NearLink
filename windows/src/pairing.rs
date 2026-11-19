@@ -1,5 +1,6 @@
 //! Explicit desktop consent and numeric comparison for encrypted Bluetooth pairing.
 use super::{Apartment, wait};
+use crate::i18n::{pw, t, tf};
 use std::sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}};
 use windows::{
     Devices::Enumeration::{DeviceInformationPairing, DeviceInformationCustomPairing,
@@ -9,7 +10,7 @@ use windows::{
     Win32::{Foundation::{HWND, LPARAM, WPARAM}, UI::{Controls::*, WindowsAndMessaging::{
         SendMessageW, IDCANCEL, IDYES,
     }}},
-    core::{Result, HRESULT, PCWSTR, w},
+    core::{Result, HRESULT, PCWSTR},
 };
 
 struct Registration {
@@ -50,7 +51,7 @@ pub(super) fn request(pairing: &DeviceInformationPairing, stop: &Arc<AtomicBool>
                 DevicePairingKinds::ConfirmPinMatch => {
                     let pin = args.Pin()?.to_string();
                     if !valid_pin(&pin) {
-                        return Err(super::failure("기기에서 잘못된 페어링 확인 코드를 받았어요."));
+                        return Err(super::failure(t("The device sent an invalid pairing confirmation code.")));
                     }
                     let name = args.DeviceInformation()?.Name()?.to_string();
                     let deferral = args.GetDeferral()?;
@@ -75,7 +76,7 @@ pub(super) fn request(pairing: &DeviceInformationPairing, stop: &Arc<AtomicBool>
                     });
                     Ok(())
                 }
-                _ => Err(super::failure("이 기기의 페어링 확인 방식을 지원하지 않아요.")),
+                _ => Err(super::failure(t("This device's pairing confirmation method isn't supported."))),
             }
         })();
         if let Err(error) = result {
@@ -91,8 +92,8 @@ pub(super) fn request(pairing: &DeviceInformationPairing, stop: &Arc<AtomicBool>
     let status = result.Status()?;
     if status != DevicePairingResultStatus::Paired && status != DevicePairingResultStatus::AlreadyPaired {
         let detail = callback_error.lock().unwrap().clone().unwrap_or_else(|| {
-            if seen.load(Ordering::Acquire) { "페어링 확인을 완료하지 못했어요.".into() }
-            else { "기기에서 페어링 확인 요청을 받지 못했어요.".into() }
+            if seen.load(Ordering::Acquire) { t("Couldn't complete the pairing confirmation.").into() }
+            else { t("The device didn't send a pairing confirmation request.").into() }
         });
         let cause = super::check_pairing_result(status).unwrap_err();
         return Err(super::pairing_failure(&format!("{} {detail}", cause.message())));
@@ -124,7 +125,7 @@ fn confirm_pin(name: &str, pin: &str, active: &AtomicBool, stop: &AtomicBool, ow
     if !active.load(Ordering::Acquire) || stop.load(Ordering::Acquire) {
         return Ok(false);
     }
-    let text: Vec<u16> = format!("{name}\n\n확인 코드: {pin}\n\nAndroid에 같은 코드가 표시되면 ‘예’를 눌러 주세요.\nAndroid에서도 페어링 요청을 확인해 주세요.")
+    let text: Vec<u16> = tf("{0}\n\nConfirmation code: {1}\n\nIf Android shows the same code, select “Yes”.\nAlso confirm the pairing request on Android.", &[&name, &pin])
         .encode_utf16().chain(Some(0)).collect();
     let state = PromptState { active, stop };
     let config = TASKDIALOGCONFIG {
@@ -132,8 +133,8 @@ fn confirm_pin(name: &str, pin: &str, active: &AtomicBool, stop: &AtomicBool, ow
         hwndParent: HWND(owner as *mut _),
         dwFlags: TDF_ALLOW_DIALOG_CANCELLATION | TDF_CALLBACK_TIMER | TDF_SIZE_TO_CONTENT,
         dwCommonButtons: TDCBF_YES_BUTTON | TDCBF_NO_BUTTON | TDCBF_CANCEL_BUTTON,
-        pszWindowTitle: w!("NearLink · 페어링 확인"),
-        pszMainInstruction: w!("두 기기의 확인 코드가 같은가요?"),
+        pszWindowTitle: pw("NearLink · Pairing confirmation"),
+        pszMainInstruction: pw("Do the confirmation codes on both devices match?"),
         pszContent: PCWSTR(text.as_ptr()),
         nDefaultButton: IDCANCEL.0,
         pfCallback: Some(prompt_timer),

@@ -2,6 +2,7 @@
 
 mod ble;
 mod config;
+mod i18n;
 mod model;
 mod protocol;
 mod theme;
@@ -10,6 +11,6 @@ mod ui;
 
 fn main() {
     if let Err(error) = ui::run() {
-        ui::fatal(&format!("NearLink를 시작하지 못했어요.\n{error}"));
+        ui::fatal(&i18n::tf("Couldn't start NearLink.\n{0}", &[&error]));
     }
 }

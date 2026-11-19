@@ -17,10 +17,10 @@ internal object Notifications {
     fun ensureChannels(context: Context) {
         val manager = context.getSystemService(NotificationManager::class.java)
         listOf("probe", "receiver").forEach { manager.deleteNotificationChannel(it) }
-        manager.createNotificationChannel(NotificationChannel(CONNECTION_CHANNEL, "기기 연결 유지",
-            NotificationManager.IMPORTANCE_LOW).apply { description = "배터리를 주고받는 동안 표시돼요." })
-        manager.createNotificationChannel(NotificationChannel(ALERT_CHANNEL, "기기 배터리 알림",
-            NotificationManager.IMPORTANCE_DEFAULT).apply { description = "연결한 기기의 배터리 부족과 충전 완료를 알려요." })
+        manager.createNotificationChannel(NotificationChannel(CONNECTION_CHANNEL, context.getString(R.string.channel_connection_name),
+            NotificationManager.IMPORTANCE_LOW).apply { description = context.getString(R.string.channel_connection_desc) })
+        manager.createNotificationChannel(NotificationChannel(ALERT_CHANNEL, context.getString(R.string.channel_alert_name),
+            NotificationManager.IMPORTANCE_DEFAULT).apply { description = context.getString(R.string.channel_alert_desc) })
     }
 
     private fun openApp(context: Context): PendingIntent = PendingIntent.getActivity(context, 0,
@@ -31,7 +31,7 @@ internal object Notifications {
         val intent = PendingIntent.getService(context, 1,
             Intent(context, BatteryService::class.java).setAction(BatteryService.ACTION_STOP_ALL),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
-        return Notification.Action.Builder(null, "모든 연결 중지", intent).build()
+        return Notification.Action.Builder(null, context.getString(R.string.stop_all_connections), intent).build()
     }
 
     fun connection(context: Context, title: String, text: String): Notification {
@@ -65,10 +65,10 @@ internal object Notifications {
 }
 
 /** Summary for the receiving service: connected devices with their current reading. */
-internal fun BridgeSnapshot.receiverSummary(): String {
+internal fun BridgeSnapshot.receiverSummary(): UiText {
     val connected = peers.values.filter { it.receiveState == ReceiveState.CONNECTED && it.lastReading != null }
         .sortedBy { it.displayName }
-    if (connected.isNotEmpty()) return connected.joinToString(" · ") { "${it.displayName} ${it.lastReading!!.level}%" }
+    if (connected.isNotEmpty()) return UiText.Raw(connected.joinToString(" · ") { "${it.displayName} ${it.lastReading!!.level}%" })
     val waiting = peers.values.count { it.receiveState != ReceiveState.STOPPED && it.receiveState != ReceiveState.SEND_ONLY }
-    return if (waiting > 0) "기기 ${waiting}대의 연결을 기다리고 있어요." else "연결한 기기가 없어요."
+    return if (waiting > 0) UiText.Plural(R.plurals.summary_waiting, waiting) else ui(R.string.summary_none)
 }

@@ -77,7 +77,7 @@ class BatteryService : Service() {
         if (BridgeSession.savedPeer(this) != null) return@Runnable
         Log.i(TAG, "Peer heartbeat expired; stopping bridge")
         BridgeSession.stop(this)
-        BridgeStatus.send(SendState.STOPPED, "연결 준비 시간이 끝났어요. 새 기기를 추가하려면 다시 준비해 주세요.")
+        BridgeStatus.send(SendState.STOPPED, ui(R.string.send_prep_expired))
         BridgeStatus.receive(ReceiveState.STOPPED)
     }
 
@@ -129,7 +129,7 @@ class BatteryService : Service() {
         override fun onStartFailure(errorCode: Int) {
             if (callbackGeneration != generation) return
             Log.e(TAG, "advertising failed: $errorCode")
-            BridgeStatus.send(SendState.ERROR, "배터리 보내기를 시작하지 못했어요. 블루투스를 확인하고 다시 시도해 주세요.")
+            BridgeStatus.send(SendState.ERROR, ui(R.string.send_err_start))
             stopSelf()
         }
     }
@@ -161,7 +161,7 @@ class BatteryService : Service() {
         super.onCreate()
         BridgeStatus.initialize(this)
         startForeground(Notifications.SENDER_ID, Notifications.connection(this,
-            "배터리 정보 공유 중", "연결한 기기가 이 기기의 배터리를 확인할 수 있어요."))
+            getString(R.string.notif_sharing_title), getString(R.string.notif_sharing_text)))
         registerReceiver(receiver, IntentFilter(Intent.ACTION_BATTERY_CHANGED))?.let {
             receiver.onReceive(this, it)
         }
@@ -191,7 +191,7 @@ class BatteryService : Service() {
             advertiser = adapter.bluetoothLeAdvertiser
             if (advertiser == null) {
                 Log.e(TAG, "BLE advertising unavailable")
-                BridgeStatus.send(SendState.ERROR, "배터리 보내기를 사용할 수 없어요. 블루투스 상태와 기기의 BLE 지원 여부를 확인해 주세요.")
+                BridgeStatus.send(SendState.ERROR, ui(R.string.send_err_unavailable))
                 stopSelf()
                 return
             }
@@ -199,7 +199,7 @@ class BatteryService : Service() {
             server = openedServer
             if (openedServer == null) {
                 Log.e(TAG, "GATT server unavailable")
-                BridgeStatus.send(SendState.ERROR, "배터리 서비스를 열지 못했어요. 블루투스를 확인하고 다시 시도해 주세요.")
+                BridgeStatus.send(SendState.ERROR, ui(R.string.send_err_open_service))
                 stopSelf()
                 return
             }
@@ -229,12 +229,12 @@ class BatteryService : Service() {
                 BluetoothGattCharacteristic.PERMISSION_READ_ENCRYPTED or BluetoothGattCharacteristic.PERMISSION_WRITE_ENCRYPTED))
             if (!openedServer.addService(service)) {
                 Log.e(TAG, "failed to register BAS")
-                BridgeStatus.send(SendState.ERROR, "배터리 서비스를 등록하지 못했어요. 다시 시도해 주세요.")
+                BridgeStatus.send(SendState.ERROR, ui(R.string.send_err_register_service))
                 stopSelf()
             }
         } catch (e: SecurityException) {
             Log.e(TAG, "Bluetooth permission denied", e)
-            BridgeStatus.send(SendState.ERROR, "주변 기기 권한을 허용한 뒤 다시 시도해 주세요.")
+            BridgeStatus.send(SendState.ERROR, ui(R.string.err_allow_nearby_retry))
             stopSelf()
         }
     }
@@ -244,7 +244,7 @@ class BatteryService : Service() {
             if (callbackGeneration != generation) return
             if (status != BluetoothGatt.GATT_SUCCESS) {
                 Log.e(TAG, "service registration failed: $status")
-                BridgeStatus.send(SendState.ERROR, "배터리 서비스를 등록하지 못했어요. 다시 시도해 주세요.")
+                BridgeStatus.send(SendState.ERROR, ui(R.string.send_err_register_service))
                 stopSelf()
                 return
             }
@@ -260,7 +260,7 @@ class BatteryService : Service() {
                 advertiser?.startAdvertising(settings, data, response, activeCallback)
             } catch (e: SecurityException) {
                 Log.e(TAG, "advertise permission denied", e)
-                BridgeStatus.send(SendState.ERROR, "주변 기기 권한을 허용한 뒤 다시 시도해 주세요.")
+                BridgeStatus.send(SendState.ERROR, ui(R.string.err_allow_nearby_retry))
                 stopSelf()
             }
         }

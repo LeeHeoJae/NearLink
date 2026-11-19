@@ -78,7 +78,7 @@ never starts BLE, saves fixtures, changes startup or raises battery notification
 
 ## Do's and Don'ts
 
-Preserve NearLink blue, concise Korean copy and Android information order.
+Preserve NearLink blue, concise copy in every language (English is the source text, Korean the first translation) and Android information order. Leave room in fixed layouts for longer translations.
 Use native system menus and controls, system contrast colors and visible keyboard focus.
 Avoid giant metrics, decorative icons, nested cards, excessive rounding and color-only states.
 The battery glyph is informational; lost connections and old values use caution text color

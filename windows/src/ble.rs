@@ -1,4 +1,5 @@
 use crate::{
+    i18n::{t, tf},
     model::{Discovered, Shared, State},
     protocol,
 };
@@ -46,36 +47,36 @@ fn check_pairing_result(status: DevicePairingResultStatus) -> Result<()> {
         return Ok(());
     }
     let reason = match status {
-        DevicePairingResultStatus::PairingCanceled => "페어링을 취소했어요.",
+        DevicePairingResultStatus::PairingCanceled => t("Pairing was canceled."),
         DevicePairingResultStatus::AuthenticationTimeout => {
-            "페어링 확인 시간이 지났어요. 양쪽 기기의 요청을 확인해 주세요."
+            t("Pairing confirmation timed out. Check the request on both devices.")
         }
         DevicePairingResultStatus::ConnectionRejected
-        | DevicePairingResultStatus::RejectedByHandler => "페어링 요청이 거절됐어요.",
+        | DevicePairingResultStatus::RejectedByHandler => t("The pairing request was rejected."),
         DevicePairingResultStatus::AccessDenied
         | DevicePairingResultStatus::AuthenticationNotAllowed => {
-            "Windows에서 페어링을 허용하지 않았어요. 블루투스 권한을 확인해 주세요."
+            t("Windows didn't allow pairing. Check the Bluetooth permissions.")
         }
         DevicePairingResultStatus::NotReadyToPair => {
-            "기기가 페어링할 준비가 되지 않았어요. Android에서 연결 준비를 눌러 주세요."
+            t("The device isn't ready to pair. On Android, tap Prepare to connect.")
         }
         DevicePairingResultStatus::AuthenticationFailure => {
-            "페어링 인증에 실패했어요. 양쪽 기기의 기존 페어링 기록을 확인해 주세요."
+            t("Pairing authentication failed. Check the existing pairing records on both devices.")
         }
         DevicePairingResultStatus::ProtectionLevelCouldNotBeMet => {
-            "암호화된 페어링을 설정하지 못했어요."
+            t("Couldn't set up encrypted pairing.")
         }
         DevicePairingResultStatus::OperationAlreadyInProgress => {
-            "다른 페어링 요청이 진행 중이에요. 요청을 완료한 뒤 다시 시도해 주세요."
+            t("Another pairing request is in progress. Finish it, then try again.")
         }
         DevicePairingResultStatus::RequiredHandlerNotRegistered => {
-            "Windows에서 페어링 확인 창을 시작하지 못했어요."
+            t("Windows couldn't open the pairing confirmation window.")
         }
-        _ => "페어링을 완료하지 못했어요.",
+        _ => t("Couldn't complete pairing."),
     };
-    Err(pairing_failure(&format!(
-        "{reason} ‘다시 연결’을 누르면 페어링부터 다시 시도할게요. (상태 {})",
-        status.0
+    Err(pairing_failure(&tf(
+        "{0} Select “Reconnect” to try pairing again from the start. (Status {1})",
+        &[&reason, &status.0],
     )))
 }
 
@@ -85,12 +86,12 @@ fn failure(text: &str) -> Error {
 
 fn gatt_failure(stage: &str, status: GattCommunicationStatus) -> Error {
     let reason = match status {
-        GattCommunicationStatus::Unreachable => "기기 응답 없음 (Unreachable)",
-        GattCommunicationStatus::AccessDenied => "접근 거부 (AccessDenied)",
-        GattCommunicationStatus::ProtocolError => "GATT 프로토콜 오류 (ProtocolError)",
-        _ => "알 수 없는 GATT 오류",
+        GattCommunicationStatus::Unreachable => t("Device not responding (Unreachable)"),
+        GattCommunicationStatus::AccessDenied => t("Access denied (AccessDenied)"),
+        GattCommunicationStatus::ProtocolError => t("GATT protocol error (ProtocolError)"),
+        _ => t("Unknown GATT error"),
     };
-    failure(&format!("{stage}: {reason} (상태 {}).", status.0))
+    failure(&tf("{0}: {1} (Status {2}).", &[&stage, &reason, &status.0]))
 }
 
 struct Apartment;
@@ -120,7 +121,7 @@ fn wait<T: RuntimeType>(
         if stop.load(Ordering::Acquire) || Instant::now() >= deadline {
             let _ = operation.Cancel();
             return Err(failure(
-                "응답 시간이 지났어요. 기기의 연결 준비와 블루투스를 확인해 주세요.",
+                t("Timed out. Check that the device is prepared to connect and that Bluetooth is on."),
             ));
         }
         thread::sleep(Duration::from_millis(50));
@@ -131,7 +132,7 @@ fn wait<T: RuntimeType>(
 fn bytes(buffer: &IBuffer) -> Result<Vec<u8>> {
     let length = buffer.Length()? as usize;
     if length > 512 {
-        return Err(failure("지원하지 않는 배터리 데이터예요."));
+        return Err(failure(t("Unsupported battery data.")));
     }
     let mut value = vec![0; length];
     DataReader::FromBuffer(buffer)?.ReadBytes(&mut value)?;
@@ -151,7 +152,7 @@ fn write(characteristic: &GattCharacteristic, value: &[u8], stop: &AtomicBool) -
     )?;
     if result.Status()? != GattCommunicationStatus::Success {
         return Err(failure(
-            "기기가 요청을 거절했어요. Android NearLink를 업데이트하고 연결 준비를 눌러 주세요.",
+            t("The device rejected the request. Update Android NearLink and tap Prepare to connect."),
         ));
     }
     Ok(())
@@ -164,7 +165,7 @@ fn read(characteristic: &GattCharacteristic, stop: &AtomicBool) -> Result<Vec<u8
         20,
     )?;
     if result.Status()? != GattCommunicationStatus::Success {
-        return Err(failure("배터리 정보를 읽지 못했어요."));
+        return Err(failure(t("Couldn't read battery info.")));
     }
     bytes(&result.Value()?)
 }
@@ -183,7 +184,7 @@ fn characteristic(
         || result.Characteristics()?.Size()? == 0
     {
         return Err(failure(
-            "최신 NearLink 배터리 서비스를 찾지 못했어요. Android 앱을 업데이트해 주세요.",
+            t("Couldn't find the latest NearLink battery service. Update the Android app."),
         ));
     }
     let characteristic = result.Characteristics()?.GetAt(0)?;
@@ -262,7 +263,7 @@ fn subscribe(
         20,
     )?;
     if result != GattCommunicationStatus::Success {
-        return Err(failure("배터리 변경 알림을 설정하지 못했어요."));
+        return Err(failure(t("Couldn't enable battery change notifications.")));
     }
     Ok(())
 }
@@ -300,7 +301,7 @@ fn connection(
         .unwrap()
         .peers
         .get(&address)
-        .ok_or_else(|| failure("기기가 제거됐어요."))?
+        .ok_or_else(|| failure(t("The device was removed.")))?
         .saved
         .clone();
     let operation = if saved.device_id.is_empty() {
@@ -328,14 +329,14 @@ fn connection(
     if !pairing.IsPaired()? {
         if !*pair {
             return Err(pairing_failure(
-                "페어링이 필요해요. ‘다시 연결’을 누르면 페어링 요청을 시작해요.",
+                t("Pairing is required. Select “Reconnect” to start a pairing request."),
             ));
         }
         set_state(
             shared,
             address,
             State::Connecting,
-            "양쪽 기기의 페어링 요청을 확인해 주세요.",
+            t("Check the pairing request on both devices."),
             wake,
         );
         let result = pairing::request(&pairing, stop, owner);
@@ -343,8 +344,9 @@ fn connection(
             if error.code() == PAIRING_REQUIRED {
                 error
             } else {
-                pairing_failure(&format!(
-                    "페어링 요청에 실패했어요. ‘다시 연결’을 눌러 다시 시도해 주세요. {error}"
+                pairing_failure(&tf(
+                    "Pairing request failed. Select “Reconnect” to try again. {0}",
+                    &[&error],
                 ))
             }
         })?;
@@ -419,11 +421,11 @@ fn connection(
     )?;
     let status = result.Status()?;
     if status != GattCommunicationStatus::Success {
-        return Err(gatt_failure("배터리 서비스 검색 실패", status));
+        return Err(gatt_failure(t("Battery service discovery failed"), status));
     }
     if result.Services()?.Size()? == 0 {
         return Err(failure(
-            "기기에 NearLink 배터리 서비스가 없어요. Android NearLink의 실행 상태를 확인해 주세요.",
+            t("The device has no NearLink battery service. Check that Android NearLink is running."),
         ));
     }
     let service = result.Services()?.GetAt(0)?;
@@ -441,16 +443,16 @@ fn connection(
         | 1;
     write(&session, &protocol::hello(request), stop)?;
     let epoch = protocol::ready(&read(&session, stop)?, request, None)
-        .ok_or_else(|| failure("기기의 연결 세션을 확인하지 못했어요."))?;
+        .ok_or_else(|| failure(t("Couldn't verify the device's connection session.")))?;
     let mut level = read(&level_char, stop)?
         .first()
         .copied()
         .filter(|v| *v <= 100);
     if level.is_none() {
-        return Err(failure("잘못된 배터리 잔량이에요."));
+        return Err(failure(t("Invalid battery level.")));
     }
     let initial_status = protocol::battery_status(&read(&status_char, stop)?)
-        .ok_or_else(|| failure("잘못된 배터리 상태예요."))?;
+        .ok_or_else(|| failure(t("Invalid battery status.")))?;
     let mut charging = initial_status.charging;
     let mut plugged = initial_status.plugged;
     shared
@@ -463,7 +465,7 @@ fn connection(
     // Discard notifications that arrived before ACK. ACK always causes a fresh level notification.
     while let Ok(event) = rx.try_recv() {
         if matches!(event, Event::Stop | Event::Invalidated) {
-            return Err(failure("연결이 변경되어 다시 연결할게요."));
+            return Err(failure(t("The connection changed. Reconnecting.")));
         }
     }
     write(&session, &protocol::ack(request, epoch), stop)?;
@@ -478,11 +480,11 @@ fn connection(
             Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(()),
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 if !verified {
-                    return Err(failure("배터리 알림이 도착하지 않아 다시 연결할게요."));
+                    return Err(failure(t("The battery notification didn't arrive. Reconnecting.")));
                 }
                 write(&control, &[protocol::JOIN_RECEIVER], stop)?;
                 if protocol::ready(&read(&session, stop)?, request, Some(epoch)).is_none() {
-                    return Err(failure("기기의 배터리 서비스가 다시 시작됐어요."));
+                    return Err(failure(t("The device's battery service restarted.")));
                 }
                 shared.lock().unwrap().verified(address);
                 wake();
@@ -494,7 +496,7 @@ fn connection(
             Event::Stop => return Ok(()),
             Event::Invalidated => {
                 return Err(failure(
-                    "기기의 연결이나 서비스가 변경되어 다시 연결할게요.",
+                    t("The device's connection or service changed. Reconnecting."),
                 ));
             }
             Event::Level(value) => {
@@ -611,12 +613,12 @@ impl Engine {
                 let detail = result
                     .err()
                     .map(|e| e.to_string())
-                    .unwrap_or_else(|| "연결이 끊어졌어요.".into());
+                    .unwrap_or_else(|| t("The connection was lost.").into());
                 set_state(
                     &shared,
                     address,
                     State::Retrying,
-                    &format!("{detail} {delay}초 후 재시도할게요."),
+                    &tf("{0} Retrying in {1} s.", &[&detail, &delay]),
                     &wake,
                 );
                 // Drop old callback messages before waiting; Stop still has an atomic flag.
@@ -643,7 +645,7 @@ impl Engine {
             &self.shared,
             address,
             State::Stopped,
-            "이 PC의 수신을 중지했어요.",
+            t("Stopped receiving on this PC."),
             &self.wake,
         );
     }
@@ -681,10 +683,10 @@ impl Engine {
                 model.scanning = false;
                 if let Err(error) = result {
                     model.message =
-                        format!("기기를 검색하지 못했어요. 블루투스를 확인해 주세요. {error}");
+                        tf("Couldn't search for devices. Check Bluetooth. {0}", &[&error]);
                 } else if model.discovered.is_empty() {
                     model.message =
-                        "기기를 찾지 못했어요. Android에서 연결 준비를 누르고 다시 검색해 주세요."
+                        t("No devices found. On Android, tap Prepare to connect, then search again.")
                             .into();
                 }
                 drop(model);
@@ -751,7 +753,7 @@ fn scan(shared: &Shared, wake: &Wake, stop: &Arc<AtomicBool>) -> Result<()> {
                 address,
                 random_address: args.BluetoothAddressType()? == BluetoothAddressType::Random,
                 name: if name.is_empty() {
-                    format!("NearLink 기기 · {:04X}", address & 0xffff)
+                    tf("NearLink device · {0}", &[&format!("{:04X}", address & 0xffff)])
                 } else {
                     name
                 },
@@ -767,7 +769,7 @@ fn scan(shared: &Shared, wake: &Wake, stop: &Arc<AtomicBool>) -> Result<()> {
         while Instant::now() < until && !stop.load(Ordering::Acquire) {
             if watcher.Status()? == BluetoothLEAdvertisementWatcherStatus::Aborted {
                 return Err(failure(
-                    "검색이 중단됐어요. PC의 블루투스 어댑터와 권한을 확인해 주세요.",
+                    t("The search was interrupted. Check this PC's Bluetooth adapter and permissions."),
                 ));
             }
             thread::sleep(Duration::from_millis(100));
@@ -790,9 +792,9 @@ mod tests {
             (GattCommunicationStatus::AccessDenied, "AccessDenied"),
             (GattCommunicationStatus::ProtocolError, "ProtocolError"),
         ] {
-            let error = gatt_failure("배터리 서비스 검색 실패", status);
+            let error = gatt_failure(t("Battery service discovery failed"), status);
             assert!(error.message().contains(expected));
-            assert!(error.message().contains("배터리 서비스 검색 실패"));
+            assert!(error.message().contains(t("Battery service discovery failed")));
             assert_ne!(error.code(), PAIRING_REQUIRED);
         }
     }
@@ -859,8 +861,8 @@ mod tests {
         ] {
             let error = check_pairing_result(status).unwrap_err();
             assert_eq!(error.code(), PAIRING_REQUIRED);
-            assert!(error.message().contains("다시 연결"));
-            assert!(error.message().contains(&format!("상태 {}", status.0)));
+            assert!(error.message().contains("Reconnect"));
+            assert!(error.message().contains(&format!("Status {}", status.0)));
         }
     }
 
@@ -868,10 +870,15 @@ mod tests {
     fn pairing_failure_preserves_cause_instead_of_claiming_a_disconnect() {
         let canceled =
             check_pairing_result(DevicePairingResultStatus::PairingCanceled).unwrap_err();
-        assert!(canceled.message().contains("취소"));
+        assert!(canceled.message().contains("canceled"));
+        crate::i18n::with_lang(crate::i18n::Lang::Ko, || {
+            let canceled =
+                check_pairing_result(DevicePairingResultStatus::PairingCanceled).unwrap_err();
+            assert!(canceled.message().contains("취소"));
+        });
         let timeout =
             check_pairing_result(DevicePairingResultStatus::AuthenticationTimeout).unwrap_err();
-        assert!(timeout.message().contains("확인 시간이"));
+        assert!(timeout.message().contains("timed out"));
         assert_ne!(failure("GATT failure").code(), PAIRING_REQUIRED);
     }
 }

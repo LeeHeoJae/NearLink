@@ -13,34 +13,36 @@ enum class ReceiveState { STOPPED, SEARCHING, CONNECTING, READING, CONNECTED, RE
 data class LastReading(val peerId: String, val peerName: String, val level: Int, val timeMillis: Long, val charging: Boolean? = null, val plugged: Boolean? = null)
 data class PeerSnapshot(
     val peerId: String,
-    val peerName: String = "선택한 기기",
+    /** Empty until the Bluetooth name is known; shown as a localized placeholder meanwhile. */
+    val peerName: String = "",
     val receiveState: ReceiveState = ReceiveState.STOPPED,
-    val detail: String? = null,
+    val detail: UiText? = null,
     val lastReading: LastReading? = null,
     val sendOnly: Boolean = false,
     /** A name shown only in this app; Bluetooth and the Samsung widget keep the device name. */
     val alias: String? = null,
 ) {
     val displayName: String get() = alias ?: peerName
+    fun displayText(): UiText = displayName.takeIf { it.isNotBlank() }?.let { UiText.Raw(it) } ?: ui(R.string.selected_device)
 }
-data class StatusEvent(val timeMillis: Long, val description: String)
+data class StatusEvent(val timeMillis: Long, val description: UiText)
 
 /** Relative reception age for quick scanning; the exact time stays available alongside it. */
-internal fun relativeAge(now: Long, then: Long): String {
+internal fun relativeAge(now: Long, then: Long): UiText {
     val minutes = (now - then).coerceAtLeast(0L) / 60_000L
     return when {
-        minutes < 1 -> "방금"
-        minutes < 60 -> "${minutes}분 전"
-        minutes < 24 * 60 -> "${minutes / 60}시간 전"
-        minutes < 48 * 60 -> "어제"
-        else -> "${minutes / (24 * 60)}일 전"
+        minutes < 1 -> ui(R.string.age_just_now)
+        minutes < 60 -> ui(R.string.age_minutes, minutes)
+        minutes < 24 * 60 -> ui(R.string.age_hours, minutes / 60)
+        minutes < 48 * 60 -> ui(R.string.age_yesterday)
+        else -> UiText.Plural(R.plurals.age_days, (minutes / (24 * 60)).toInt())
     }
 }
 data class BridgeSnapshot(
     val sendState: SendState = SendState.STOPPED,
-    val sendDetail: String? = null,
+    val sendDetail: UiText? = null,
     val receiveState: ReceiveState = ReceiveState.STOPPED,
-    val receiveDetail: String? = null,
+    val receiveDetail: UiText? = null,
     val peerId: String? = null,
     val peerName: String? = null,
     val lastReading: LastReading? = null,
@@ -54,27 +56,47 @@ data class BridgeSnapshot(
 internal fun BridgeSnapshot.preparationSecondsRemaining(now: Long): Long =
     if (preparationState == PreparationState.OPEN) ((preparationUntil - now).coerceAtLeast(0L) + 999L) / 1000L else 0L
 
-private fun BridgeSnapshot.withEvent(description: String): BridgeSnapshot =
+private fun BridgeSnapshot.withEvent(description: UiText): BridgeSnapshot =
     copy(events = (events + StatusEvent(System.currentTimeMillis(), description)).takeLast(20))
 
-internal fun peerStateText(state: ReceiveState): String = when (state) {
-    ReceiveState.STOPPED -> "중지"
-    ReceiveState.SEARCHING -> "기기 검색"
-    ReceiveState.CONNECTING -> "연결 중"
-    ReceiveState.READING -> "배터리 확인 중"
-    ReceiveState.CONNECTED -> "연결됨"
-    ReceiveState.RETRYING -> "재연결 대기"
-    ReceiveState.WAITING_FOR_BLUETOOTH -> "블루투스 대기"
-    ReceiveState.ERROR -> "오류"
-    ReceiveState.SEND_ONLY -> "송신 전용"
-}
+internal fun peerStateText(state: ReceiveState): UiText = ui(when (state) {
+    ReceiveState.STOPPED -> R.string.peer_state_stopped
+    ReceiveState.SEARCHING -> R.string.peer_state_searching
+    ReceiveState.CONNECTING -> R.string.peer_state_connecting
+    ReceiveState.READING -> R.string.peer_state_reading
+    ReceiveState.CONNECTED -> R.string.peer_state_connected
+    ReceiveState.RETRYING -> R.string.peer_state_retrying
+    ReceiveState.WAITING_FOR_BLUETOOTH -> R.string.peer_state_waiting_bt
+    ReceiveState.ERROR -> R.string.peer_state_error
+    ReceiveState.SEND_ONLY -> R.string.peer_state_send_only
+})
+
+private fun sendEventText(state: SendState): UiText = ui(R.string.event_send, ui(when (state) {
+    SendState.STOPPED -> R.string.send_state_stopped
+    SendState.STARTING -> R.string.send_state_starting
+    SendState.ADVERTISING -> R.string.send_state_advertising
+    SendState.WAITING_FOR_BLUETOOTH -> R.string.send_state_waiting_bt
+    SendState.ERROR -> R.string.send_state_error
+}))
+
+private fun receiveEventText(state: ReceiveState): UiText = ui(R.string.event_receive, ui(when (state) {
+    ReceiveState.STOPPED -> R.string.recv_event_stopped
+    ReceiveState.SEARCHING -> R.string.recv_event_searching
+    ReceiveState.CONNECTING -> R.string.recv_event_connecting
+    ReceiveState.READING -> R.string.recv_event_reading
+    ReceiveState.CONNECTED -> R.string.recv_event_connected
+    ReceiveState.RETRYING -> R.string.recv_event_retrying
+    ReceiveState.WAITING_FOR_BLUETOOTH -> R.string.recv_event_waiting_bt
+    ReceiveState.ERROR -> R.string.recv_event_error
+    ReceiveState.SEND_ONLY -> R.string.recv_event_send_only
+}))
 
 /** Records each device's own state change so multi-device history stays attributable. */
-internal fun BridgeSnapshot.withPeerState(peerId: String, state: ReceiveState, detail: String?): BridgeSnapshot {
+internal fun BridgeSnapshot.withPeerState(peerId: String, state: ReceiveState, detail: UiText?): BridgeSnapshot {
     if (peerId !in peers && state == ReceiveState.STOPPED) return this
     val old = peers[peerId] ?: PeerSnapshot(peerId)
     val next = copy(peers = peers + (peerId to old.copy(receiveState = state, detail = detail)))
-    return if (old.receiveState == state) next else next.withEvent("${old.displayName} · ${peerStateText(state)}")
+    return if (old.receiveState == state) next else next.withEvent(ui(R.string.event_peer_state, old.displayText(), peerStateText(state)))
 }
 
 internal fun BridgeSnapshot.withoutPeer(peerId: String): BridgeSnapshot = copy(
@@ -138,29 +160,23 @@ object BridgeStatus {
                     if (histories.contains("$address.charging")) histories.getBoolean("$address.charging", false) else null,
                     if (histories.contains("$address.plugged")) histories.getBoolean("$address.plugged", false) else null)
                 else old
-            mutable.update { it.copy(peers = it.peers + (address to PeerSnapshot(address, reading?.peerName ?: "선택한 기기", lastReading = reading,
-                detail = if (histories.getBoolean("$address.stop_unconfirmed", false)) BridgeSession.STOP_UNCONFIRMED else null,
+            mutable.update { it.copy(peers = it.peers + (address to PeerSnapshot(address, reading?.peerName ?: "", lastReading = reading,
+                detail = if (histories.getBoolean("$address.stop_unconfirmed", false)) ui(R.string.stop_unconfirmed) else null,
                 sendOnly = BridgeSession.sendsOnlyTo(context, address),
                 alias = histories.getString("$address.alias", null)))) }
             if (BridgeSession.contains(context, address) && BridgeSession.sendsOnlyTo(context, address)) {
                 sendOnly(context, address, histories.getString("$address.name", null) ?: "Windows PC")
             }
         }
-        BridgeSession.stopNotice(context)?.let { notice -> mutable.update { it.copy(sendDetail = notice) } }
+        BridgeSession.stopNotice(context)?.let { notice -> mutable.update { it.copy(sendDetail = UiText.Raw(notice)) } }
         initialized = true
     }
 
-    fun send(state: SendState, detail: String? = null) {
+    fun send(state: SendState, detail: UiText? = null) {
         mutable.update {
             val next = it.copy(sendState = state, sendDetail = detail)
             if (it.sendState == state && it.sendDetail == detail) next
-            else next.withEvent("보내기 · " + when (state) {
-                SendState.STOPPED -> "중지"
-                SendState.STARTING -> "준비 중"
-                SendState.ADVERTISING -> "준비 완료"
-                SendState.WAITING_FOR_BLUETOOTH -> "블루투스 대기"
-                SendState.ERROR -> "오류"
-            })
+            else next.withEvent(sendEventText(state))
         }
     }
 
@@ -179,7 +195,7 @@ object BridgeStatus {
         }
     }
 
-    fun receivePeer(peerId: String, state: ReceiveState, detail: String? = null) {
+    fun receivePeer(peerId: String, state: ReceiveState, detail: UiText? = null) {
         mutable.update { it.withPeerState(peerId, state, detail) }
     }
 
@@ -226,24 +242,14 @@ object BridgeStatus {
         context.applicationContext.getSharedPreferences("bridge_peer_readings", Context.MODE_PRIVATE).edit {
             if (confirmed) remove("$peerId.stop_unconfirmed") else putBoolean("$peerId.stop_unconfirmed", true)
         }
-        receivePeer(peerId, ReceiveState.STOPPED, if (confirmed) "연결을 중지했어요." else BridgeSession.STOP_UNCONFIRMED)
+        receivePeer(peerId, ReceiveState.STOPPED, ui(if (confirmed) R.string.peer_stopped_confirmed else R.string.stop_unconfirmed))
     }
 
-    fun receive(state: ReceiveState, detail: String? = null) {
+    fun receive(state: ReceiveState, detail: UiText? = null) {
         mutable.update {
             val next = it.copy(receiveState = state, receiveDetail = detail)
             if (it.receiveState == state && it.receiveDetail == detail) next
-            else next.withEvent("받기 · " + when (state) {
-                ReceiveState.STOPPED -> "중지"
-                ReceiveState.SEARCHING -> "기기 검색"
-                ReceiveState.CONNECTING -> "연결 중"
-                ReceiveState.READING -> "배터리 확인 중"
-                ReceiveState.CONNECTED -> "읽기 성공"
-                ReceiveState.RETRYING -> "재시도 대기"
-                ReceiveState.WAITING_FOR_BLUETOOTH -> "블루투스 대기"
-                ReceiveState.ERROR -> "오류"
-                ReceiveState.SEND_ONLY -> "송신 전용"
-            })
+            else next.withEvent(receiveEventText(state))
         }
     }
 
@@ -267,7 +273,7 @@ object BridgeStatus {
         if (mutable.value.peerId != peerId) return
         mutable.update {
             val next = it.acceptReading(reading, connected)
-            if (next === it || !connected || it.receiveState == ReceiveState.CONNECTED) next else next.withEvent("받기 · 읽기 성공")
+            if (next === it || !connected || it.receiveState == ReceiveState.CONNECTED) next else next.withEvent(receiveEventText(ReceiveState.CONNECTED))
         }
         context.applicationContext.getSharedPreferences("bridge_status", Context.MODE_PRIVATE).edit {
             putString("peer_id", peerId)

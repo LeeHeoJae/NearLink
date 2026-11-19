@@ -50,18 +50,18 @@ class ReceiverService : Service() {
         if (Build.VERSION.SDK_INT >= 33) registerReceiver(bluetoothReceiver, IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED), Context.RECEIVER_EXPORTED)
         else registerReceiver(bluetoothReceiver, IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED))
         BridgeStatus.initialize(this)
-        startForeground(Notifications.RECEIVER_ID, receiverNotification(BridgeStatus.state.value.receiverSummary()))
+        startForeground(Notifications.RECEIVER_ID, receiverNotification(BridgeStatus.state.value.receiverSummary().resolve(this)))
         // The ongoing notification shows connected devices' latest levels, updated only when the summary changes.
         summaryJob = scope.launch {
             BridgeStatus.state.map { it.receiverSummary() }.distinctUntilChanged().collect { summary ->
-                Notifications.update(this@ReceiverService, Notifications.RECEIVER_ID, receiverNotification(summary))
+                Notifications.update(this@ReceiverService, Notifications.RECEIVER_ID, receiverNotification(summary.resolve(this@ReceiverService)))
             }
         }
     }
 
     private val scope = MainScope()
     private var summaryJob: Job? = null
-    private fun receiverNotification(summary: String) = Notifications.connection(this, "기기 배터리 수신 중", summary)
+    private fun receiverNotification(summary: String) = Notifications.connection(this, getString(R.string.receiver_title), summary)
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val address = intent?.getStringExtra("address")?.uppercase(java.util.Locale.ROOT)
@@ -115,7 +115,7 @@ class ReceiverService : Service() {
     private inner class PeerConnection(val address: String) {
     @Volatile private var gatt: BluetoothGatt? = null
     private var device: BluetoothDevice? = null
-    private var peerName = "선택한 기기"
+    private var peerName = ""
     private val handler = Handler(Looper.getMainLooper())
     @Volatile private var stopping = false
     private val reconnect = Runnable { scanForPeer() }
@@ -184,7 +184,7 @@ class ReceiverService : Service() {
         if (activeOperation == null) runNextOperation(active)
     }
 
-    private val operationTimeout = Runnable { scheduleReconnect("응답이 없어 다시 연결할게요.") }
+    private val operationTimeout = Runnable { scheduleReconnect(ui(R.string.recv_timeout)) }
 
     private fun armTimeout() {
         handler.removeCallbacks(operationTimeout)
@@ -225,7 +225,7 @@ class ReceiverService : Service() {
                 if (!scanning || stopping) return@post
                 Log.e(TAG, "scan failed: $errorCode")
                 stopScan()
-                scheduleReconnect("기기 검색에 실패했어요. 블루투스를 확인해 주세요.")
+                scheduleReconnect(ui(R.string.recv_scan_failed))
             }
         }
     }
@@ -236,12 +236,12 @@ class ReceiverService : Service() {
         try {
             val adapter = getSystemService(BluetoothManager::class.java).adapter
             if (adapter == null || !adapter.isEnabled) {
-                BridgeStatus.receivePeer(address, ReceiveState.WAITING_FOR_BLUETOOTH, "블루투스를 켜면 다시 연결을 시도할게요.")
+                BridgeStatus.receivePeer(address, ReceiveState.WAITING_FOR_BLUETOOTH, ui(R.string.recv_bt_off_retry))
                 return
             }
             val selected = adapter.bondedDevices.firstOrNull { it.address.equals(address, true) }
             if (selected == null) {
-                BridgeStatus.receivePeer(address, ReceiveState.ERROR, "페어링된 기기를 찾지 못했어요. 블루투스 설정을 확인해 주세요.")
+                BridgeStatus.receivePeer(address, ReceiveState.ERROR, ui(R.string.recv_paired_not_found))
                 return
             }
             if (device == selected && (gatt != null || scanning)) {
@@ -253,13 +253,13 @@ class ReceiverService : Service() {
                 return
             }
             device = selected
-            peerName = (if (Build.VERSION.SDK_INT >= 30) selected.alias else selected.name) ?: "이름 없는 기기"
+            peerName = (if (Build.VERSION.SDK_INT >= 30) selected.alias else selected.name) ?: getString(R.string.unnamed_device)
             BridgeStatus.selectPeer(address, peerName)
             handler.removeCallbacks(heartbeat)
             handler.postDelayed(heartbeat, 30_000)
             scanForPeer()
         } catch (e: SecurityException) {
-            BridgeStatus.receivePeer(address, ReceiveState.ERROR, "주변 기기 권한을 확인해 주세요.")
+            BridgeStatus.receivePeer(address, ReceiveState.ERROR, ui(R.string.check_nearby_perm))
         }
     }
     fun isStopping(): Boolean = stopping || stopRequested
@@ -286,8 +286,8 @@ class ReceiverService : Service() {
             if (activeScanner == null) {
                 Log.e(TAG, "BLE scanner unavailable")
                 if (adapter == null || !adapter.isEnabled) {
-                    scheduleReconnect("블루투스를 켜면 다시 연결을 시도할게요.", waitingForBluetooth = true)
-                } else scheduleReconnect("기기 검색을 사용할 수 없어요. 블루투스를 확인해 주세요.")
+                    scheduleReconnect(ui(R.string.recv_bt_off_retry), waitingForBluetooth = true)
+                } else scheduleReconnect(ui(R.string.recv_scan_unavailable))
                 return
             }
             val filter = ScanFilter.Builder().setDeviceAddress(peer.address).setServiceUuid(ParcelUuid(BAS)).build()
@@ -302,7 +302,7 @@ class ReceiverService : Service() {
             Log.i(TAG, "waiting for paired peer battery advertisement")
         } catch (e: SecurityException) {
             Log.e(TAG, "scan permission denied", e)
-            BridgeStatus.receivePeer(address, ReceiveState.ERROR, "주변 기기 권한을 허용한 뒤 다시 연결해 주세요.")
+            BridgeStatus.receivePeer(address, ReceiveState.ERROR, ui(R.string.recv_allow_nearby_reconnect))
             fail()
         } catch (e: IllegalStateException) {
             Log.e(TAG, "scan unavailable", e)
@@ -343,12 +343,12 @@ class ReceiverService : Service() {
             }
         } catch (e: SecurityException) {
             Log.e(TAG, "connect permission denied", e)
-            BridgeStatus.receivePeer(address, ReceiveState.ERROR, "주변 기기 권한을 허용한 뒤 다시 연결해 주세요.")
+            BridgeStatus.receivePeer(address, ReceiveState.ERROR, ui(R.string.recv_allow_nearby_reconnect))
             fail()
         }
     }
 
-    private fun scheduleReconnect(detail: String? = null, waitingForBluetooth: Boolean = false) {
+    private fun scheduleReconnect(detail: UiText? = null, waitingForBluetooth: Boolean = false) {
         if (stopping) return
         recoveryRequested = false
         handler.removeCallbacks(deferredRecovery)
@@ -385,7 +385,7 @@ class ReceiverService : Service() {
         rediscoverPending = false
         try { old?.disconnect(); old?.close() }
         catch (e: SecurityException) { Log.e(TAG, "recovery disconnect denied", e) }
-        BridgeStatus.receivePeer(address, ReceiveState.RETRYING, "배터리 연결을 새로 확인하고 있어요.")
+        BridgeStatus.receivePeer(address, ReceiveState.RETRYING, ui(R.string.recv_refresh))
         Log.i(TAG, "pausing connection to refresh system battery profile")
         handler.postDelayed(reconnect, 15_000)
         handler.postDelayed(heartbeat, 45_000)
@@ -451,7 +451,7 @@ class ReceiverService : Service() {
                     return@post
                 }
                 if (status != BluetoothGatt.GATT_SUCCESS) {
-                    if (sessionClient != null) { scheduleReconnect("연결 확인에 실패해 다시 연결할게요."); return@post }
+                    if (sessionClient != null) { scheduleReconnect(ui(R.string.recv_verify_failed)); return@post }
                     Log.w(TAG, "Reciprocal setup was not accepted: $status")
                 }
                 if (operation.sessionStep == 3) sessionClient?.written()
@@ -465,7 +465,7 @@ class ReceiverService : Service() {
                 val operation = activeOperation ?: return@post
                 if (!operation.subscribe || operation.characteristic !== descriptor.characteristic) return@post
                 Log.i(TAG, "subscription callback characteristic=${descriptor.characteristic.uuid} descriptor=${descriptor.uuid} status=$status")
-                if (status != BluetoothGatt.GATT_SUCCESS) { scheduleReconnect("변경 알림을 설정하지 못해 다시 연결할게요."); return@post }
+                if (status != BluetoothGatt.GATT_SUCCESS) { scheduleReconnect(ui(R.string.recv_notify_failed)); return@post }
                 finishOperation(gatt)
             }
         }
@@ -492,7 +492,7 @@ class ReceiverService : Service() {
         } catch (e: SecurityException) {
             discovering = false
             Log.e(TAG, "service discovery denied", e)
-            BridgeStatus.receivePeer(address, ReceiveState.ERROR, "주변 기기 권한을 허용한 뒤 다시 연결해 주세요.")
+            BridgeStatus.receivePeer(address, ReceiveState.ERROR, ui(R.string.recv_allow_nearby_reconnect))
             fail()
         }
     }
@@ -508,9 +508,9 @@ class ReceiverService : Service() {
             return
         }
         val service = active.getService(BAS)
-        if (service == null) { Log.e(TAG, "BAS missing"); scheduleReconnect("상대 기기에서 배터리 서비스를 찾지 못했어요. 배터리 보내기를 확인해 주세요."); return }
+        if (service == null) { Log.e(TAG, "BAS missing"); scheduleReconnect(ui(R.string.recv_no_bas)); return }
         val level = service.getCharacteristic(LEVEL)
-        if (level == null) { scheduleReconnect("상대 기기에 잔량 정보가 없어요."); return }
+        if (level == null) { scheduleReconnect(ui(R.string.recv_no_level)); return }
         lastLevel = null
         charging = null
         plugged = null
@@ -588,7 +588,7 @@ class ReceiverService : Service() {
                     1 -> sessionClient?.hello()
                     3 -> sessionClient?.acknowledgement()
                     else -> byteArrayOf(if (operation.stop) 4 else if (operation.recover) 3 else 1)
-                } ?: run { scheduleReconnect("연결 세션을 확인할 수 없어 다시 연결할게요."); return }
+                } ?: run { scheduleReconnect(ui(R.string.recv_session_failed)); return }
                 if (Build.VERSION.SDK_INT >= 33) active.writeCharacteristic(operation.characteristic, payload, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT) == BluetoothStatusCodes.SUCCESS
                 else {
                     operation.characteristic.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
@@ -612,10 +612,10 @@ class ReceiverService : Service() {
                 if (operation.stop) finishStop()
                 else if (operation.recover) finishOperation(active)
                 else if (operation.handshake && sessionClient == null) finishOperation(active)
-                else scheduleReconnect("배터리 정보 요청에 실패해 다시 연결할게요.")
+                else scheduleReconnect(ui(R.string.recv_request_failed))
             }
         } catch (e: SecurityException) {
-            BridgeStatus.receivePeer(address, ReceiveState.ERROR, "주변 기기 권한을 허용한 뒤 다시 연결해 주세요.")
+            BridgeStatus.receivePeer(address, ReceiveState.ERROR, ui(R.string.recv_allow_nearby_reconnect))
             fail()
         }
     }
@@ -633,7 +633,7 @@ class ReceiverService : Service() {
         val valid = if (characteristic.uuid == BatteryService.SESSION) value != null && sessionClient?.acceptReady(value) == true
             else value != null && acceptLoggedValue("read", characteristic.uuid, value)
         if (status != BluetoothGatt.GATT_SUCCESS || !valid) {
-            scheduleReconnect("배터리를 읽지 못해 다시 연결할게요.")
+            scheduleReconnect(ui(R.string.recv_read_failed))
             return
         }
         finishOperation(active)
@@ -672,7 +672,7 @@ class ReceiverService : Service() {
             BridgeStatus.recordReading(this@ReceiverService, peer.address, peerName, level, charging, plugged, connected = streamReady)
             reconnectAttempts = 0
         } catch (e: SecurityException) {
-            BridgeStatus.receivePeer(address, ReceiveState.ERROR, "주변 기기 권한을 허용한 뒤 다시 연결해 주세요.")
+            BridgeStatus.receivePeer(address, ReceiveState.ERROR, ui(R.string.recv_allow_nearby_reconnect))
             fail()
             return false
         }

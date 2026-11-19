@@ -57,10 +57,10 @@ object PeerAlerts {
         load(context)
         val alert = latches.getOrPut(peerId) { AlertLatch() }.update(level, charging, mutable.value) ?: return
         val text = when (alert) {
-            PeerAlert.LOW -> "배터리가 부족해요. 현재 $level%"
-            PeerAlert.FULL -> "배터리가 완전히 충전됐어요."
+            PeerAlert.LOW -> context.getString(R.string.alert_low, level)
+            PeerAlert.FULL -> context.getString(R.string.alert_full)
         }
-        Notifications.alert(context, peerId, name, text)
+        Notifications.alert(context, peerId, name.ifBlank { context.getString(R.string.selected_device) }, text)
     }
 
     @Synchronized fun forget(peerId: String) { latches.remove(peerId) }

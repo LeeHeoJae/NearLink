@@ -30,9 +30,9 @@ class BridgeStatusTest {
     }
 
     @Test fun serviceCleanupKeepsUnconfirmedStopNoticeVisible() {
-        BridgeStatus.send(SendState.STOPPED, "중지 여부 확인 필요")
+        BridgeStatus.send(SendState.STOPPED, UiText.Raw("중지 여부 확인 필요"))
         BridgeStatus.sendStopped()
-        assertEquals("중지 여부 확인 필요", BridgeStatus.state.value.sendDetail)
+        assertEquals(UiText.Raw("중지 여부 확인 필요"), BridgeStatus.state.value.sendDetail)
         BridgeStatus.send(SendState.STARTING)
         assertNull(BridgeStatus.state.value.sendDetail)
     }
@@ -112,7 +112,7 @@ class BridgeStatusTest {
         BridgeStatus.selectPeer("isolation-a", "A")
         BridgeStatus.selectPeer("isolation-b", "B")
         BridgeStatus.receivePeer("isolation-a", ReceiveState.CONNECTED)
-        BridgeStatus.receivePeer("isolation-b", ReceiveState.RETRYING, "다시 시도")
+        BridgeStatus.receivePeer("isolation-b", ReceiveState.RETRYING, UiText.Raw("다시 시도"))
         assertEquals(ReceiveState.CONNECTED, BridgeStatus.state.value.peers["isolation-a"]?.receiveState)
         assertEquals(ReceiveState.RETRYING, BridgeStatus.state.value.peers["isolation-b"]?.receiveState)
         BridgeStatus.receivePeer("isolation-b", ReceiveState.STOPPED)
@@ -131,8 +131,8 @@ class BridgeStatusTest {
     @Test fun peerStateChangesAreRecordedWithTheDeviceName() {
         val start = BridgeSnapshot(peers = mapOf("a" to PeerSnapshot("a", "휴대폰", alias = "업무폰")))
         val connected = start.withPeerState("a", ReceiveState.CONNECTED, null)
-        assertEquals("업무폰 · 연결됨", connected.events.single().description)
-        assertEquals(1, connected.withPeerState("a", ReceiveState.CONNECTED, "같은 상태").events.size)
+        assertEquals(ui(R.string.event_peer_state, UiText.Raw("업무폰"), ui(R.string.peer_state_connected)), connected.events.single().description)
+        assertEquals(1, connected.withPeerState("a", ReceiveState.CONNECTED, UiText.Raw("같은 상태")).events.size)
         assertEquals(start, start.withPeerState("unknown", ReceiveState.STOPPED, null))
     }
 
@@ -148,11 +148,11 @@ class BridgeStatusTest {
 
     @Test fun relativeAgeUsesCoarseReadableUnits() {
         val minute = 60_000L
-        assertEquals("방금", relativeAge(30_000, 0))
-        assertEquals("5분 전", relativeAge(5 * minute, 0))
-        assertEquals("2시간 전", relativeAge(125 * minute, 0))
-        assertEquals("어제", relativeAge(30 * 60 * minute, 0))
-        assertEquals("3일 전", relativeAge(3 * 24 * 60 * minute, 0))
-        assertEquals("방금", relativeAge(0, 5 * minute))
+        assertEquals(ui(R.string.age_just_now), relativeAge(30_000, 0))
+        assertEquals(ui(R.string.age_minutes, 5L), relativeAge(5 * minute, 0))
+        assertEquals(ui(R.string.age_hours, 2L), relativeAge(125 * minute, 0))
+        assertEquals(ui(R.string.age_yesterday), relativeAge(30 * 60 * minute, 0))
+        assertEquals(UiText.Plural(R.plurals.age_days, 3), relativeAge(3 * 24 * 60 * minute, 0))
+        assertEquals(ui(R.string.age_just_now), relativeAge(0, 5 * minute))
     }
 }

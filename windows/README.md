@@ -1,93 +1,68 @@
 # NearLink for Windows
 
-휴대폰·태블릿의 배터리 잔량과 충전 상태를 BLE로 받아 시스템 트레이에서 확인하는
-Rust + Win32 네이티브 앱입니다. 웹 엔진, JVM, .NET 런타임을 사용하지 않습니다.
-노트북 배터리 송신은 이번 버전에 포함하지 않습니다.
+English · [한국어](README.ko.md)
 
-## 실행
+A native Rust + Win32 app that receives the battery level and charging state of phones and tablets over BLE and shows them in the system tray. It uses no web engine, JVM or .NET runtime. Sending a laptop's battery is not part of this version.
 
-Windows 11 x64와 BLE 어댑터를 기준으로 개발했습니다. Windows 10 및 ARM64는
-아직 실행 검증하지 않았습니다. 배터리 수신에는 BLE 주변기기 역할이 필요하지 않습니다.
+## Run
 
-1. 최신 Android NearLink를 설치하고 **연결 준비**를 누릅니다.
-2. `nearlink.exe`를 실행하고 **기기 추가**를 누릅니다.
-3. 검색된 기기를 선택한 뒤 **선택한 기기 연결**을 누릅니다. 검색은 15초 후 끝납니다.
-4. 페어링되지 않은 기기는 앱에서 페어링을 요청합니다. 양쪽의 요청을 확인합니다.
-   숫자 비교가 필요하면 NearLink 확인 창과 Android에 표시된 코드가 같은지 확인합니다.
-   취소·실패하면 상세 원인을 표시하고 자동 재연결을 멈춥니다. **다시 연결**을 누르면
-   페어링부터 다시 시도합니다. 준비 시간이 지나면 Android에서 다시 준비하세요.
-5. 목록에서 잔량, 충전 상태, 연결 상태, 마지막 배터리 수신 시각을 확인합니다.
+Developed for Windows 11 x64 with a BLE adapter. Windows 10 and ARM64 have not been verified yet. Receiving a battery does not need the BLE peripheral role.
 
-**현재 저장소의 Android 빌드가 필요합니다.** 이전 버전은 수신 전용 PC의 등록 명령을
-지원하지 않습니다. 연결 시 Windows는 JOIN_RECEIVER → HELLO/READY → 읽기·구독 → ACK를
-수행하고, ACK 쓰기 성공과 이후 배터리 알림을 모두 확인해야 연결됨으로 표시합니다.
+1. Install the latest Android NearLink and tap **Prepare to connect**.
+2. Run `nearlink.exe` and click **Add device**.
+3. Select a discovered device and click **Connect selected device**. The search ends after 15 seconds.
+4. For a device that isn't paired yet, the app asks Windows to pair. Confirm the request on both sides. If a number comparison is needed, check that the NearLink confirmation window shows the same code as Android. If pairing is canceled or fails, the app shows the detailed cause and stops automatic reconnection. Click **Reconnect** to try again from pairing. When the preparation time runs out, prepare again on Android.
+5. In the list, check the level, charging state, connection state and the time the battery was last received.
 
-## 사용
+**You need the Android build from this repository.** Earlier versions don't support the command that registers a receive-only PC. When connecting, Windows performs JOIN_RECEIVER → HELLO/READY → read and subscribe → ACK, and shows Connected only after the ACK write succeeds and a later battery notification arrives.
 
-- 트레이 아이콘 왼쪽 클릭: 작은 **기기 배터리** 창. 기기별 잔량을 보고 **기기 추가**나
-  **상세 설정**을 열 수 있습니다. 오른쪽 클릭: Windows 기본 메뉴와 기기 관리·설정·종료.
-- 기본 트레이 아이콘은 속이 빈 단색 배터리이며 Windows 작업표시줄의 밝은/어두운 테마와
-  고대비 색상을 따릅니다. 오른쪽 클릭 → **트레이 표시**에서 대표 기기를 선택하면 해당
-  기기의 잔량 숫자(%)를 표시합니다. 선택은 재실행해도 유지됩니다. 연결 끊김·수신 중지·
-  수신 전·15분 이상 오래된 값은 기본 윤곽선으로 돌아갑니다. 마우스를 올리면 대표 기기를
-  먼저 보여 주며 잔량·충전·연결 상태를 확인할 수 있습니다. 전체 목록은 왼쪽 클릭으로 엽니다.
-- 관리 창은 기기 이름, 잔량·충전 상태, 연결 상태, 마지막 수신을 한 목록 항목에 표시합니다.
-  기기를 선택하면 아래 동작이 활성화됩니다. 방향키, Tab, Alt 접근 키와 기기 오른쪽 메뉴를 지원합니다.
-- **별명**: 이 PC에서 표시할 이름을 설정합니다. 삼성 위젯의 이름은 바뀌지 않습니다.
-- **수신 중지**: 이 PC의 수신을 중지합니다. 재실행해도 중지 상태를 유지합니다.
-- **다시 연결**: 중지한 기기를 다시 켜거나 연결을 재시도합니다.
-- **목록에서 제거**: 이 PC의 등록을 제거합니다. Windows 페어링은 유지합니다.
-- Android의 등록과 송신 서비스도 끝내려면 Android 앱에서 해당 기기의 연결을 중지하세요.
-- 창을 닫아도 트레이에서 실행합니다. 종료는 트레이 메뉴에서 선택합니다.
-- 설정에서 부족 알림 기준(1~90%), 100% 알림, 로그인 시 자동 시작을 선택합니다.
-  자동 시작은 기본으로 꺼져 있습니다. 켜면 현재 실행 파일 경로를 사용자 Run 키에 등록합니다.
-  파일을 이동하기 전 자동 시작을 끄고, 이동한 위치에서 다시 켜세요.
-- 알림은 Windows 트레이 알림을 사용합니다. 방해 금지·알림 설정에 따라 표시되지 않을 수 있습니다.
-  여러 기기의 알림이 동시에 생기면 한 알림에 모아 표시합니다. 충전 상태를 알 수 없는 기기도
-  부족 알림을 한 번 표시하며, 충전 중으로 확인된 경우에만 생략합니다.
-- 기기 추가 창은 이 PC에 이미 등록한 기기에 **이미 등록됨**을 표시합니다.
+## Usage
 
-연결이 끊긴 기기의 마지막 값은 기록으로 남습니다. **연결 상태와 마지막 수신 시각을 함께
-확인하세요.** 마지막 시각은 배터리 데이터 수신 기준이며, 배터리가 변하지 않으면 오래된
-시각일 수 있습니다. 재실행 시 이전 잔량을 현재 값처럼 복원하지 않습니다.
+- Left-click the tray icon: a small **Device Battery** window. It shows each device's level and lets you open **Add device** or **Open details**. Right-click: the Windows default menu with device management, settings and exit.
+- The default tray icon is a hollow single-color battery that follows the taskbar's light/dark theme and high contrast colors. Right-click → **Tray icon** and choose a main device to show its level (%) as a number. The choice is kept across restarts. Lost connections, stopped receiving, not yet received and values older than 15 minutes return to the default outline. Hovering shows the main device first with level, charging and connection state. Left-click opens the full list.
+- The management window shows each device's name, level and charging state, connection state and last reception in one list item. Selecting a device enables the actions below the list. It supports arrow keys, Tab, Alt access keys and a per-device context menu.
+- **Nickname**: sets the name shown on this PC. The name in the Samsung widget doesn't change.
+- **Stop receiving**: stops receiving on this PC and stays stopped after a restart.
+- **Reconnect**: turns a stopped device back on or retries the connection.
+- **Remove from list**: removes the registration on this PC. The Windows pairing is kept.
+- To also end Android's registration and sending service, stop that device's connection in the Android app.
+- Closing the window keeps the app running in the tray. Choose Exit from the tray menu to quit.
+- In Settings you can choose the low battery threshold (1–90%), the 100% alert and starting at sign-in. Starting at sign-in is off by default. When on, it registers the current executable path in the user's Run key. Turn it off before moving the file, then turn it on again at the new location.
+- Alerts use Windows tray notifications and may not appear depending on Do Not Disturb and notification settings. When several devices raise alerts at once, they are combined into one notification. A device whose charging state is unknown still raises one low battery alert; it is skipped only when charging is confirmed.
+- The Add device window marks devices already registered on this PC as **Already added**.
 
-15분 이상 배터리 데이터가 갱신되지 않으면 **오래된 값**을 표시합니다. 단, 연결된 기기의
-30초 주기 세션 확인이 최근 15분 안에 성공했다면 Android가 변화가 없어 알림을 보내지 않은
-것이므로 현재 값으로 표시합니다. 연결이 끊기면 **연결 끊김 · 재연결 대기**, 수신을 중지하면
-**수신 중지됨**으로 구분합니다. 수신 시각이 오래됐다는 것만으로 연결이 끊겼다고 판단하지 않습니다.
-하루가 지난 수신 시각은 "어제", "N일 전"으로 표시합니다.
+The last value of a disconnected device is kept as history. **Check the connection state together with the last received time.** The last time is based on battery data reception, so it can be old if the battery doesn't change. Restarting doesn't restore an old level as if it were current.
 
-Windows의 밝은/어두운 앱 모드, 접근성의 텍스트 크기(100~225%)와 고대비 색상을 따릅니다.
-시스템 제목 표시줄과 메뉴는 Windows가 그립니다. 기본 스크롤 막대와 메시지 상자는
-OS의 표준 표시를 유지합니다. 창 크기는 모니터 작업 영역에 맞추고 기기 목록은 세로로 스크롤합니다.
+If battery data hasn't been updated for 15 minutes or more, **Outdated value** is shown. However, if the 30-second session check of a connected device succeeded within the last 15 minutes, Android simply sent no notification because nothing changed, so the value is shown as current. A lost connection is shown as **Disconnected · Waiting to reconnect** and stopped receiving as **Receiving stopped**. An old reception time alone is never taken as a lost connection. Times older than a day are shown as "Yesterday" and "N days ago".
 
-## 경량 동작
+The app follows Windows light/dark app mode, the accessibility text size (100–225%) and high contrast colors. Windows draws the title bar and menus. The default scroll bars and message boxes keep the OS's standard look. The window fits the monitor's work area and the device list scrolls vertically.
 
-- 사용자 세션의 프로세스 하나와 숨겨진 메시지 창 하나가 트레이를 유지합니다.
-- 기기 검색은 추가 창에서만 실행하며, 검색 종료·창 닫기·앱 종료 시 중단합니다.
-- 기기당 작업 스레드 하나가 GATT 변경 알림을 기다립니다. 평상시 배터리를 반복 조회하지 않습니다.
-- 연결 시도마다 유지용 GATT 세션을 소유하고, 재시도·수신 중지·종료 시 해제합니다.
-  종료 시 모든 기기의 작업을 취소하고 정리가 끝난 뒤 단일 실행 잠금을 해제합니다.
-- 연결 중에는 30초마다 등록·서버 세션을 확인합니다. 실패 시 1→2→4→…→최대 60초로 재시도합니다.
-- GATT 작업은 기기별로 순서대로 실행하고 20초 후 취소합니다. 최초 페어링 제한은 60초입니다.
-- 서버 서비스 변경·연결 끊김·세션 변경을 감지하면 이벤트 등록과 기존 핸들을 해제하고 재연결합니다.
-- 창을 닫으면 화면 갱신 타이머를 중단합니다. 다시 열기 위한 소량의 UI 자원은 유지합니다.
-- 설정·기기 이름 변경 때만 파일을 저장합니다. 배터리 알림마다 디스크에 기록하지 않습니다.
-- C 런타임은 정적으로 링크합니다. OS 제공 DLL 이외의 별도 런타임 설치를 요구하지 않습니다.
+## Languages
 
-## 설정 위치
+The app follows the Windows display language: Korean when it is Korean, English otherwise. To force a language, start it with `--lang en` or `--lang ko`, or set `NEARLINK_LANG`. See [Adding a language](../README.md#adding-a-language) to add another one.
 
-`%LOCALAPPDATA%\NearLink\settings.json`에 기기 식별자, 이름·별명, 수신 활성 여부,
-알림 설정을 저장합니다. 임시 파일을 기록·동기화한 후 원자적으로 교체합니다.
-읽을 수 없는 파일은 덮어쓰지 않고 오류를 표시합니다. 외부 서버로 전송하지 않습니다.
+## Lightweight behavior
 
-개발 검증에서는 `nearlink.exe --data-dir <폴더>`로 별도 프로필을 사용할 수 있습니다.
-프로필별로 하나의 인스턴스만 실행하며, 두 번째 실행은 기존 관리 창을 엽니다.
+- One process in the user session and one hidden message window keep the tray alive.
+- Device search runs only in the Add device window and stops when the search ends, the window closes or the app exits.
+- One worker thread per device waits for GATT change notifications. It doesn't poll the battery repeatedly.
+- Each connection attempt owns a keep-alive GATT session and releases it on retry, stop and exit. On exit all device tasks are canceled and the single-instance lock is released after cleanup finishes.
+- While connected, the registration and server session are checked every 30 seconds. On failure it retries with 1→2→4→… up to 60 seconds.
+- GATT operations run in order per device and are canceled after 20 seconds. The first-pairing limit is 60 seconds.
+- When a server service change, disconnection or session change is detected, event registrations and old handles are released and it reconnects.
+- Closing the window stops the redraw timer. A small amount of UI resources is kept for reopening.
+- Files are saved only when settings or device names change. No battery alert writes to disk.
+- The C runtime is linked statically. No runtime other than the DLLs shipped with the OS needs to be installed.
 
-## 빌드와 검증
+## Settings location
 
-Rust MSVC 도구 체인, Visual Studio의 **C++를 사용한 데스크톱 개발** 빌드 도구와
-Windows SDK가 필요합니다. 저장소 루트에서:
+`%LOCALAPPDATA%\NearLink\settings.json` stores device identifiers, names and nicknames, whether receiving is enabled, and alert settings. A temporary file is written and synced, then replaced atomically. A file that can't be read is not overwritten and an error is shown. Nothing is sent to an external server.
+
+For development checks, `nearlink.exe --data-dir <folder>` uses a separate profile. Only one instance runs per profile, and a second launch opens the existing management window.
+
+## Build and verification
+
+You need the Rust MSVC toolchain, the Visual Studio **Desktop development with C++** build tools and the Windows SDK. From the repository root:
 
 ```powershell
 .\windows\build.ps1
@@ -95,23 +70,19 @@ Windows SDK가 필요합니다. 저장소 루트에서:
 .\windows\build.ps1 check
 ```
 
-빌드 결과는 `windows/target/release/nearlink.exe`입니다. `Cargo.lock`을 포함하고
-`--locked`로 빌드합니다. 이 작업에서 설치한 저장소 내부 `.tools` 도구가 있으면 스크립트가
-자동으로 사용하며, 그 밖에는 PATH의 Cargo를 사용합니다.
+The build output is `windows/target/release/nearlink.exe`. `Cargo.lock` is included and builds use `--locked`. If a repository-local `.tools` toolchain installed for this work exists, the script uses it automatically; otherwise it uses the Cargo on PATH.
 
-화면은 Windows 기본 컨트롤과 시스템 글꼴, 키보드 탐색, DPI 배율을 사용합니다.
-기기 목록을 중심으로 배치하고, 검색·별명·설정은 별도 소유 창에서 처리합니다.
-실제 BLE 수신, 재부팅·절전 복귀, 다중 기기 장시간 동작은 해당 하드웨어에서 추가 검증해야 합니다.
+The UI uses Windows standard controls, the system font, keyboard navigation and DPI scaling. It is laid out around the device list, and search, nickname and settings use separate owned windows. Real BLE reception, reboot and sleep recovery, and long runs with several devices need additional verification on that hardware.
 
-[초기 검증 결과와 자원 측정](../docs/windows-verification.md)에 확인한 범위와 남은 항목을 기록했습니다.
+[Initial verification results and resource measurements](../docs/windows-verification.md) (Korean) record what was checked and what remains.
 
-[Windows 11 UI 개선 검증](../docs/windows-ui-verification.md)에는 화면·상호작용 검사와 변경 전후의 자원 비교를 기록합니다.
+[Windows 11 UI improvement verification](../docs/windows-ui-verification.md) (Korean) records screen and interaction checks and before/after resource comparisons.
 
-화면 검증용 예시 데이터는 별도 프로필에서만 사용할 수 있습니다. 실제 수신이 아니며 BLE,
-알림, 자동 시작 변경과 설정 저장을 실행하지 않습니다.
+Sample data for screen checks is available only in a separate profile. It isn't real reception and runs no BLE, notifications, startup changes or settings saves.
 
 ```powershell
 .\windows\target\release\nearlink.exe --preview --data-dir .\ui-review\windows\preview
 # --preview-theme light|dark|contrast, --preview-text-scale 150, --preview-empty
-# --quick-view : 빠른 보기로 시작 (일반 실행에서도 사용 가능)
+# --lang en|ko : force the display language
+# --quick-view : start in the quick view (also available in normal runs)
 ```

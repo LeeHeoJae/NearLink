@@ -8,14 +8,14 @@ import android.service.quicksettings.Tile
 import android.service.quicksettings.TileService
 
 /**
- * Quick Settings shortcut for "연결 준비". It opens the app rather than starting the service
+ * Quick Settings shortcut for "Prepare to connect". It opens the app rather than starting the service
  * directly, so permission prompts, Bluetooth-off fixes and the countdown stay visible.
  */
 class PrepareTileService : TileService() {
     override fun onStartListening() {
         qsTile?.apply {
             state = if (BridgeStatus.state.value.preparationState == PreparationState.OPEN) Tile.STATE_ACTIVE else Tile.STATE_INACTIVE
-            if (Build.VERSION.SDK_INT >= 29) subtitle = if (state == Tile.STATE_ACTIVE) "준비 중" else null
+            if (Build.VERSION.SDK_INT >= 29) subtitle = if (state == Tile.STATE_ACTIVE) getString(R.string.tile_subtitle_preparing) else null
             updateTile()
         }
     }
